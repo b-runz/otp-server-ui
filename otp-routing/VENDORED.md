@@ -1057,10 +1057,37 @@ transit/service/PatternByServiceDatesFilter.java
 the original vendoring above, copied verbatim from the same upstream commit (`61a3af6798`) this
 module's other files were cut from.
 `WorldEnvelopeRepository`/`VehicleParkingRepository`/`OsmInfoGraphBuildRepository`/`StopConsolidationRepository`/`EmissionRepository`/`EmpiricalDelayRepository`/`FareServiceFactory`
-are newly-written stubs, not copies — see this repo's own
-`docs/superpowers/specs/2026-09-30-otp-server-ui-design.md` for why. All seven are empty marker
+were originally newly-written stubs, not copies — see this repo's own
+`docs/superpowers/specs/2026-09-30-otp-server-ui-design.md` for why. All seven were empty marker
 interfaces: `SerializedGraphObject` only ever holds them as constructor-injected fields and never
 calls a method on them, so no behaviour needed to be stubbed in.
+
+**Task 4 update (throwaway graph-builder — see `docs/graph-build.md`)**: building a real graph
+surfaced that two of these seven are genuinely *populated* during graph building and *do* need
+real behavior once something actually calls their methods, and one was a mistaken duplicate:
+
+- `WorldEnvelopeRepository` and `OsmInfoGraphBuildRepository` were upgraded from empty-marker
+  stubs to the **real** upstream interfaces, each with a real verbatim implementation added
+  (`internal/DefaultWorldEnvelopeRepository.java` + `model/{WorldEnvelope,WorldEnvelopeBuilder,
+  MedianCalcForDoubles}.java`; `internal/DefaultOsmInfoGraphBuildRepository.java` +
+  `model/Platform.java`), all copied verbatim from the same upstream commit.
+- `VehicleParkingRepository` (the empty-marker stub version, in this package) was **deleted**: it
+  was a redundant duplicate of the exact same fully-qualified name as the real
+  `VehicleParkingRepository` interface `otp-street` already vendors in full (Task 2, with a real
+  `DefaultVehicleParkingRepository`) — since `otp-routing` depends on `otp-street`, this local copy
+  was silently shadowing the real one. Deleting it lets `otp-routing` resolve the real interface.
+- `StopConsolidationRepository` and `FareServiceFactory` remain empty-marker stubs (still
+  unpopulated in practice), but each got a sibling trivial concrete `Noop*` class
+  (`ext/stopconsolidation/NoopStopConsolidationRepository.java`,
+  `routing/fares/NoopFareServiceFactory.java`) so a real, non-null, classpath-resolvable instance
+  exists for `SerializedGraphObject`'s non-`@Nullable` constructor parameters.
+
+Also added: `src/main/resources/otp-project-info.properties` (did not exist anywhere in this repo
+before Task 4), with the real `otp.serialization.version.id=277` from the same commit's
+`pom.xml`. Without it, `OtpProjectInfo`'s graph-file-header id falls back to the literal string
+`"UNKNOWN"` — which would make the round-trip version check in
+`SerializedGraphObject`'s `validateGraphSerializationId(...)` pass *coincidentally*
+(`"UNKNOWN".equals("UNKNOWN")`) rather than genuinely verifying `277`.
 
 Compiling `SerializedGraphObject.java` surfaced several more unresolved dependencies beyond that
 enumerated list, handled as follows:

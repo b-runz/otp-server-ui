@@ -162,28 +162,48 @@ referenced anywhere in the module, so no stub was needed for them.)
 ## otp-server-ui addition: graph loading (see `VENDORED.md`'s matching section)
 
 Added on top of the above when `routing/graph/SerializedGraphObject.java` was vendored in. All
-seven are empty marker interfaces: `SerializedGraphObject` only holds each as a
+seven were originally empty marker interfaces: `SerializedGraphObject` only holds each as a
 constructor-injected field and never calls a method on it, so nothing beyond the type itself
-needed to exist.
+needed to exist. Task 4 (throwaway graph-builder) upgraded two of these from stub to real, and
+deleted one outright as a duplicate of an already-real type — see below.
 
-- **`org/opentripplanner/service/worldenvelope/WorldEnvelopeRepository.java`** — `extends
-  Serializable`, matching upstream. Referenced by `routing/graph/SerializedGraphObject.java`.
-- **`org/opentripplanner/service/vehicleparking/VehicleParkingRepository.java`** — plain
-  interface (upstream does not extend `Serializable`). Referenced by
+- **`org/opentripplanner/service/worldenvelope/WorldEnvelopeRepository.java`** — **no longer a
+  stub as of Task 4**: real upstream file, verbatim, plus a real
+  `internal/DefaultWorldEnvelopeRepository.java` implementation and its
+  `model/{WorldEnvelope,WorldEnvelopeBuilder,MedianCalcForDoubles}.java` dependencies (also
+  verbatim). Needed because Task 4's `graph_builder.module.geometry.CalculateWorldEnvelopeModule`
+  genuinely calls `saveEnvelope(...)` on it, and the resulting populated instance is embedded in
+  the saved `graph.obj`.
+- **`org/opentripplanner/service/vehicleparking/VehicleParkingRepository.java`** — **deleted by
+  Task 4**: this was a redundant duplicate of the exact same fully-qualified name as the *real*
+  `VehicleParkingRepository` interface `otp-street` already vendors in full (Task 2, with a real
+  `internal/DefaultVehicleParkingRepository` implementation) — since `otp-routing` depends on
+  `otp-street`, this local empty-marker copy was silently shadowing the real one for
+  `otp-routing`'s own compilation. Deleting it lets `otp-routing` resolve the real interface from
+  `otp-street` instead.
+- **`org/opentripplanner/service/osminfo/OsmInfoGraphBuildRepository.java`** — **no longer a stub
+  as of Task 4**: real upstream file, verbatim, plus a real
+  `internal/DefaultOsmInfoGraphBuildRepository.java` implementation and its
+  `model/Platform.java` dependency (also verbatim). Needed because Task 4's `OsmModule`/
+  `TurnRestrictionModule` genuinely call `addPlatform(...)`/`addTurnRestriction(...)` on it, and
+  the resulting populated instance is embedded in the saved `graph.obj` (still `@Nullable` in
+  `SerializedGraphObject`'s constructor, but now non-null in practice).
+- **`org/opentripplanner/ext/stopconsolidation/StopConsolidationRepository.java`** — still an
+  empty-marker stub (`extends Serializable`, matching upstream); Task 4 added a sibling
+  **`NoopStopConsolidationRepository.java`** (a trivial concrete class implementing it — there's
+  nothing to implement, the interface has no methods) so a real, classpath-resolvable instance
+  exists for `SerializedGraphObject`'s non-`@Nullable` constructor parameter. Referenced by
   `routing/graph/SerializedGraphObject.java`.
-- **`org/opentripplanner/service/osminfo/OsmInfoGraphBuildRepository.java`** — `extends
-  Serializable`, matching upstream. Referenced (as a `@Nullable` field) by
-  `routing/graph/SerializedGraphObject.java`.
-- **`org/opentripplanner/ext/stopconsolidation/StopConsolidationRepository.java`** — `extends
-  Serializable`, matching upstream. Referenced by `routing/graph/SerializedGraphObject.java`.
 - **`org/opentripplanner/ext/emission/EmissionRepository.java`** — `extends Serializable`,
   matching upstream. Referenced (as a `@Nullable` field) by
   `routing/graph/SerializedGraphObject.java`.
 - **`org/opentripplanner/ext/empiricaldelay/EmpiricalDelayRepository.java`** — `extends
   Serializable`, matching upstream. Referenced (as a `@Nullable` field) by
   `routing/graph/SerializedGraphObject.java`.
-- **`org/opentripplanner/routing/fares/FareServiceFactory.java`** — plain interface (upstream does
-  not extend `Serializable`). Referenced by `routing/graph/SerializedGraphObject.java`.
+- **`org/opentripplanner/routing/fares/FareServiceFactory.java`** — still an empty-marker stub
+  (upstream does not extend `Serializable`); Task 4 added a sibling
+  **`NoopFareServiceFactory.java`** (same reasoning as `NoopStopConsolidationRepository` above).
+  Referenced by `routing/graph/SerializedGraphObject.java`.
 
 Two more stubs, not enumerated in the task brief, were needed to compile `SerializedGraphObject`'s
 own dependency closure:
