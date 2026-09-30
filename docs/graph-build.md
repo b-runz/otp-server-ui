@@ -3,7 +3,10 @@
 This documents the **throwaway** graph-building project used once, by Task 4 of the
 `2026-09-30-backend-json-api` plan, to produce
 `otp-routing/src/test/resources/tiny-fixture-graph.obj` -- a real, version-compatible serialized
-OTP graph used as a test fixture. It is not part of the `otp-server-ui` Gradle reactor and is
+OTP graph used as a test fixture. A second copy lives at
+`backend/src/test/resources/tiny-fixture-graph.obj` (added by Task 5), which is the one the
+`backend` module's own tests actually load via classpath resource lookup -- keep both in sync if
+this fixture is ever rebuilt. It is not part of the `otp-server-ui` Gradle reactor and is
 **never committed** (`.tools/` is gitignored). This doc exists so the same approach can be
 reproduced later without re-deriving it, and as the reference for the eventual production
 Denmark-wide graph-building pipeline (explicitly out of scope here -- see "Not done here" below).
