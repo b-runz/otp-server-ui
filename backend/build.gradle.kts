@@ -1,9 +1,10 @@
 plugins {
-    kotlin("jvm") version "2.1.0"
+    kotlin("jvm") version "2.3.21"
     application
 }
 
 repositories {
+    maven("https://cache-redirector.jetbrains.com/maven-central")
     mavenCentral()
 }
 
