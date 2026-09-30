@@ -1,5 +1,6 @@
 package one.otpserverui.routing
 
+import java.time.Duration
 import java.time.Instant
 import one.otpserverui.model.TimeMode
 import org.opentripplanner.model.GenericLocation
@@ -40,6 +41,13 @@ fun bringBike(
         .withTo(GenericLocation.fromCoordinate(destination))
         .withDateTime(dateTime)
         .apply { if (timeMode == TimeMode.ARRIVE_BY) withArriveBy(true) }
+        // Bring Bike's own real semantics (bikebus's `EmbeddedRequestBuilder`, SearchMode.BRING_BIKE
+        // branch): bike through transfers too, not just access/egress -- biking through a transfer
+        // is expensive, so it's paired with a steeper transfer cost below, not the generic default
+        // (see RoutingEngine.requestBuilder) -- plus a widened search window.
+        .withJourney { it.withAllModes(StreetMode.BIKE) }
+        .withSearchWindow(Duration.ofHours(12))
+        .withPreferences { preferences -> preferences.withTransfer { transfer -> transfer.withCost(3600) } }
         .buildRequest()
 
     val accessEgressDuration = request.preferences().street().accessEgress().maxDuration().valueOf(StreetMode.BIKE)

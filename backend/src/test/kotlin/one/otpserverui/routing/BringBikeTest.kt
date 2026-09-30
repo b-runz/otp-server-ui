@@ -28,7 +28,7 @@ import org.opentripplanner.street.geometry.WgsCoordinate
  */
 class BringBikeTest {
     @Test
-    fun `real bike-plus-transit itinerary for the known Aarhus trip`() {
+    fun `bringBike composes direct and transit options, returning at least one real itinerary`() {
         val fixturePath = checkNotNull(javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
         val loaded = GraphLoader.load(fixturePath)
         val engine = RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
