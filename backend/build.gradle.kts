@@ -16,6 +16,10 @@ dependencies {
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.3")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.slf4j:slf4j-simple:2.0.16")
+    // NearbyStops.kt builds its own bounding-box Envelope (same as OTP's own
+    // StraightLineNearbyStopFinder) -- otp-street only declares jts-core as `implementation`,
+    // so it isn't visible transitively here; same version pinned there.
+    implementation("org.locationtech.jts:jts-core:1.20.0")
 
     implementation(project(":otp-routing"))
     implementation(project(":otp-street"))
