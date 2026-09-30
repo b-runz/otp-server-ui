@@ -32,14 +32,25 @@ loaded and never has to be lazily reconstructed per request.
   rendering.
 - GTFS-realtime, service alerts, or any live-data feed beyond the static
   GTFS + OSM extract used to build the graph.
-- Reusing `bikebus`'s lazy/scoped-loading machinery (`LazyRaptorTransitDataProvider`,
-  `ScopedPatternMaterializer`, `IncrementalGraphAssembler`, `LazyOsmVertex`,
-  the tiled `transit_index.fbs`/`street_tile.fbs` pipeline). That
-  architecture exists specifically to fit inside a phone's memory ceiling — a
-  server has no such ceiling, so this project loads the graph eagerly, the
-  way OTP was originally designed to run, and skips the custom pipeline
-  entirely in favor of OTP's own `GraphBuilder` over a raw GTFS zip and OSM
-  `.pbf` extract.
+- Reusing `bikebus`'s *lazy/scoped* loading behavior (`LazyRaptorTransitDataProvider`'s
+  per-search discovery, `ScopedPatternMaterializer`'s touched-subset
+  scoping, `IncrementalGraphAssembler`'s tile-by-tile partial loading,
+  `LazyOsmVertex`'s on-demand edge decoding). That behavior exists
+  specifically to fit inside a phone's memory ceiling — a server has no such
+  ceiling, so this project calls the same underlying construction code
+  *unscoped* (see "Data pipeline and graph loading," below) instead of
+  reimplementing it.
+- Vendoring OTP's own graph-building/ingestion code (`graph_builder.*`,
+  `gtfs.*`, `osm.*`) — `bikebus`'s own `VENDORED.md` confirms these were
+  deliberately excluded from what it vendored, and pulling in a real
+  released upstream OTP JAR just for this would risk a binary-incompatible
+  `Graph` format against everything else that's vendored (the vendored
+  commit, `61a3af6798`, is 2454 commits past the nearest tagged release, not
+  itself a release). Building the graph from a raw GTFS zip + OSM `.pbf`
+  extract happens externally, using a real, unmodified, standalone OTP build
+  from that exact commit (available locally at
+  `bikebus/OpenTripPlanner`) — this project only *loads* the resulting
+  serialized graph file, it never *builds* one.
 
 ## Feature Inventory (parity target)
 
@@ -104,9 +115,10 @@ Two independently deployable pieces, served as a single process on the VM:
 |  +----------------------------------------------------+    |
 |                          |                                   |
 |  +----------------------------------------------------+    |
-|  | Graph (built once at startup by stock OTP            |    |
-|  | GraphBuilder, from a GTFS zip + Denmark OSM.pbf,      |    |
-|  | held in memory for the process's lifetime)            |    |
+|  | Graph (loaded once at startup from a pre-built        |    |
+|  | serialized graph file -- see "Data pipeline and       |    |
+|  | graph loading" -- held in memory for the process's    |    |
+|  | lifetime)                                              |    |
 |  +----------------------------------------------------+    |
 +-----------------------------------------------------------+
 ```
@@ -137,10 +149,14 @@ follow-up calls.
   `TransitService`/whole-network `RaptorTransitData` construction, since the
   server holds one graph in memory for its whole lifetime and there is no
   per-request scoping to do.
-- **Graph build:** stock OTP `GraphBuilder`, run either at process startup
-  against a GTFS zip + OSM `.pbf`, or ahead of time into a serialized
-  `graph.obj` the server loads directly (faster restarts; decide during
-  implementation planning based on real startup-time measurements).
+- **Graph build vs. graph load — two separate concerns, see "Data pipeline
+  and graph loading" below:** *building* a graph from raw GTFS + OSM stays
+  entirely external to this repo (real, unmodified, standalone OTP, run from
+  the exact vendored commit's own source). This repo only *loads* the
+  resulting serialized graph file at startup, via a newly-vendored slice of
+  OTP's own graph serialization code (`routing/graph/SerializedGraphObject.java`
+  plus its `kryosupport/` package, ~8 files, using Kryo — much smaller than
+  the ingestion pipeline these two rely on).
 - **`POST /search` request:** origin/destination coordinates, mode
   (park-and-ride / bring-bike / drop-me-off), time mode + datetime, prefer-
   hubs flag, and (drop-me-off only) any via-stop context the connect flow
@@ -164,6 +180,37 @@ follow-up calls.
 - **Rendering:** itinerary cards built directly from the `/search` JSON
   response — no follow-up calls, no client-side computation of badges or
   totals beyond simple display formatting (e.g. duration-to-"1h 12m").
+
+## Data Pipeline and Graph Loading
+
+Building a graph (parsing GTFS + OSM into a routable `Graph`/
+`TransitRepository`) and loading a graph (deserializing an already-built one
+into memory) are two separate concerns here, deliberately kept apart:
+
+- **Building stays external to this repo.** It uses real, unmodified,
+  standalone OpenTripPlanner, run directly from the full source checkout at
+  `bikebus/OpenTripPlanner` (commit `61a3af6798` — the exact commit
+  `bikebus`'s own vendored modules were themselves cut from, so the
+  resulting serialized graph format is guaranteed compatible). This project
+  never vendors `graph_builder.*`/`gtfs.*`/`osm.*` — `bikebus`'s own
+  `VENDORED.md` explicitly excluded that slice as out of scope, and it pulls
+  in a large, unrelated dependency footprint (`onebusaway-gtfs`, GeoTools,
+  JTS) this project has no other use for.
+- **Loading is a small, newly-vendored addition.** OTP's own
+  `routing/graph/SerializedGraphObject.java` plus its `kryosupport/`
+  subpackage (Kryo-based binary serialization, ~8 files total) reads a
+  serialized graph file back into a real `Graph`/`TransitRepository`/
+  `TransferRepository`. It references a handful of repository types
+  (`WorldEnvelopeRepository`, `VehicleParkingRepository`,
+  `OsmInfoGraphBuildRepository`, `StopConsolidationRepository`,
+  `EmissionRepository`, `EmpiricalDelayRepository`, `FareServiceFactory`)
+  this project doesn't otherwise need — these get stubbed the same way
+  `bikebus`'s own `VENDORED.md`/`STUBS.md` already stub comparable
+  boundary/`ext.*` classes it excluded, not implemented for real.
+- **Server startup:** load the pre-built serialized graph file via this
+  newly-vendored code, extract the real `Graph`/`TransitRepository`/
+  `TransferRepository` it deserializes to, and construct `RoutingEngine`
+  directly from them — no lazy/scoped bridge, no per-request rebuilding.
 
 ## Data Flow: One Search
 
@@ -194,17 +241,22 @@ for an itinerary already returned.
 - `/geocode` proxy failures (Google API errors, rate limits) return a small
   JSON error the frontend can show inline near the address field, without
   failing the whole page.
-- Startup graph-build failure is fatal — the process does not start serving
-  traffic with a partially-built or absent graph. (Decide exact
-  health-check/readiness behavior during implementation planning.)
+- Startup graph-load failure (missing file, corrupt/incompatible serialized
+  format) is fatal — the process does not start serving traffic with a
+  partially-loaded or absent graph. (Decide exact health-check/readiness
+  behavior during implementation planning.)
 
 ## Testing
 
 - **Backend:** JVM/JUnit, following the same discipline established in
-  `bikebus`'s own routing tests — real GTFS/OSM fixture data, golden-value
-  assertions, no long-running heap/latency benchmarks as recurring unit
-  tests. Add API-level tests against Ktor's test client for each endpoint's
-  request/response contract, including the error shapes above.
+  `bikebus`'s own routing tests — a small, real, pre-built serialized graph
+  test fixture (built once, offline, the same way the production graph is —
+  see "Data Pipeline and Graph Loading" — covering the same real Aarhus area
+  `bikebus`'s own test fixtures use, checked in as a binary test resource),
+  golden-value assertions, no long-running heap/latency benchmarks as
+  recurring unit tests. Add API-level tests against Ktor's test client for
+  each endpoint's request/response contract, including the error shapes
+  above.
 - **Frontend:** Bun's built-in test runner for client-side logic that has
   real behavior worth pinning (address-swap logic, badge rendering,
   Maps-link construction) — no framework-heavy component testing needed
@@ -222,9 +274,17 @@ for an itinerary already returned.
 
 ## Open Items Carried Into Implementation Planning
 
-- Whether the graph is built at every process start or loaded from a
-  pre-built serialized `graph.obj` — depends on real measured startup time
-  once the first version runs.
+- The exact stubbing needed for `SerializedGraphObject`'s handful of
+  repository dependencies (`WorldEnvelopeRepository`,
+  `VehicleParkingRepository`, `OsmInfoGraphBuildRepository`,
+  `StopConsolidationRepository`, `EmissionRepository`,
+  `EmpiricalDelayRepository`, `FareServiceFactory`) — confirm each is safe
+  to stub as an empty/no-op implementation (this project doesn't use any of
+  the features they back), the way `bikebus`'s own `STUBS.md` already
+  stubbed comparable boundary classes.
+- The real, standalone-OTP command/config needed to build a serialized
+  graph file from a GTFS zip + Denmark OSM `.pbf` extract, and how often
+  that data gets refreshed operationally.
 - The exact via-stop/flag-stop request shape for Drop-me-off's connect flow,
   once that logic is ported off `OtpQueryBuilder`/GraphQL onto the
   in-process routing code.
