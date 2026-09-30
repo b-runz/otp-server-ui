@@ -433,51 +433,98 @@ git commit -m "Vendor OTP's graph-loading code (SerializedGraphObject + kryosupp
   serialized graph covering a small real area — used by this task's own
   test, and by every routing-logic test from Task 6 onward.
 
-- [ ] **Step 1: Source a small real GTFS + OSM pair**
+**Corrections from earlier plan research (read before starting):** the
+`OpenTripPlanner` checkout is a **Maven** project (`pom.xml`, not
+`build.gradle.kts` — every module has its own `pom.xml`), not Gradle as an
+earlier draft of this plan assumed. Neither `mvn` nor a Maven wrapper
+exists on this machine by default; a portable Apache Maven 3.9.9 has
+already been downloaded and extracted to
+`C:\Users\bru\spare-source\otp-server-ui\.tools\apache-maven-3.9.9\bin\mvn.cmd`
+(gitignored — a real, working tool install, not something to commit) for
+exactly this task. Maven Central rate-limiting is a real, recurring risk
+on this machine (already hit twice, for Gradle and for a raw Maven
+resolve) — a settings file routing Maven through the same JetBrains
+mirror already used elsewhere in this plan exists at
+`C:\Users\bru\spare-source\otp-server-ui\.tools\maven-settings.xml`; pass
+it to every `mvn` invocation via `-s`.
 
-Reuse the exact same real Aarhus-area data `bikebus`'s own test fixture
-already covers, so every ported test in this plan can reuse `bikebus`'s
-own known-good expected values instead of re-deriving new ones. Locate
-`bikebus`'s pipeline source inputs:
+- [ ] **Step 1: Source and clip a small real GTFS + OSM pair**
 
-```bash
-find /c/Users/bru/spare-source/bikebus/pipeline -iname "*.osm.pbf" -o -iname "*aarhus*gtfs*" -o -iname "*.gtfs.zip"
+The real, raw, full-Denmark source files already exist locally (found
+during this plan's own pre-dispatch research):
+`C:\Users\bru\spare-source\bikebus\pipeline\build\sources\denmark-latest.osm.pbf`
+(494 MB) and `...\pipeline\build\sources\GTFS.zip` (53 MB, a standard GTFS
+feed: `agency/attributions/calendar/calendar_dates/frequencies/routes/
+shapes/stops/stop_times/transfers/trips.txt`). Both are full-country —
+clip both down to a small Aarhus-area extract before feeding them to real
+OTP, using the exact same bounding box `bikebus`'s own pipeline already
+uses for its own Aarhus dev fixture (found in its own tests/README, reuse
+verbatim so this plan's ported tests can reuse `bikebus`'s own known-good
+expected values):
+
+```
+min_lon=10.05  min_lat=56.08  max_lon=10.30  max_lat=56.25
 ```
 
-If a small, real, already-clipped Aarhus-area GTFS zip + OSM `.pbf` extract
-exists there (bikebus's own pipeline needed exactly this kind of input at
-some point), reuse it directly. If only a *processed* (`.bxi`/`.bbt`)
-version remains and no raw GTFS/OSM source is present anymore, use the full
-Denmark raw sources bikebus's pipeline documents fetching, and clip a small
-Aarhus-area bounding box yourself (real OSM/GTFS clipping tools —
-`osmium extract`/a GTFS stop-bounding-box filter — are standard,
-document the exact bounding box and commands used in
-`docs/graph-build.md`, Step 3 below).
+**OSM clipping:** `bikebus`'s own pipeline venv
+(`C:\Users\bru\spare-source\bikebus\pipeline\.venv\Scripts\python.exe`)
+already has the real `osmium` Python package (pyosmium) installed — no
+external CLI tool needed. Use `osmium.ForwardReferenceWriter` (real,
+already-installed API — run
+`.venv/Scripts/python.exe -c "import osmium; help(osmium.ForwardReferenceWriter.__init__)"`
+yourself to see its real constructor signature before writing your own
+extraction script) to write a real, valid, reference-complete `.osm.pbf`
+extract covering the bbox above.
+
+**GTFS clipping:** no ready-made "clip a GTFS zip to a bbox and write a
+new valid zip" tool exists yet (`bikebus`'s own `gtfs_reader.py` filters
+into its own in-memory bundle representation, not back out to a real GTFS
+zip). Write a small, real Python script: read `stops.txt` and keep stops
+within the bbox (plus their `parent_station`, if any); read
+`stop_times.txt`/`trips.txt` and keep only rows referencing kept stops (a
+trip that touches at least one kept stop is fine to keep in full, even if
+some of its other stops fall outside the bbox — real OTP tolerates a stop
+with no nearby street connectivity, it just won't be walk-accessible,
+which doesn't matter for this small fixture's own purpose); keep only the
+`routes.txt`/`agency.txt`/`calendar.txt`/`calendar_dates.txt` rows those
+kept trips actually reference. Write a real, valid GTFS zip (same file
+set, filtered rows) as the result. Given `stop_times.txt` (220 MB) and
+`shapes.txt` (110 MB) are large, read them by streaming (`csv.DictReader`
+row-by-row), not by loading the whole file into memory at once.
+
+Document the exact bbox and the real clipped file sizes you end up with in
+`docs/graph-build.md` (Step 3 below) — this is genuinely fixture-scoped
+judgment (there's no single "correct" filtering strictness), so record
+what you actually did and why, not just the numbers.
 
 - [ ] **Step 2: Build a real graph from that data using standalone OTP**
 
-From `C:\Users\bru\spare-source\bikebus\OpenTripPlanner`, build the
-project's own shaded/runnable artifact per its own README (real OTP ships
-a `--build` CLI mode), then run it against the Step 1 inputs placed in one
-directory, producing a serialized graph file:
-
 ```bash
+MVN="/c/Users/bru/spare-source/otp-server-ui/.tools/apache-maven-3.9.9/bin/mvn.cmd"
+SETTINGS="/c/Users/bru/spare-source/otp-server-ui/.tools/maven-settings.xml"
 cd /c/Users/bru/spare-source/bikebus/OpenTripPlanner
-./gradlew :application:shadowJar   # confirm the real task name from that project's own build.gradle.kts first
-java -jar application/build/libs/otp-shaded.jar --build --save /path/to/aarhus-fixture-inputs/
+"$MVN" -s "$SETTINGS" -pl otp-shaded -am package -DskipTests -q
+# Real, standard Maven output path (confirmed: pom.xml's <version>2.10.0-SNAPSHOT</version>,
+# otp-shaded's own pom.xml has no custom <finalName>/<classifier> override):
+java -jar otp-shaded/target/otp-shaded-2.10.0-SNAPSHOT.jar --build --save /path/to/your/clipped-aarhus-inputs/
 ```
 
-The exact jar path/task name depends on that checkout's real Gradle
-configuration — read `OpenTripPlanner/application/build.gradle.kts`
-yourself to confirm the actual shadow/application plugin task name before
-running this; don't guess a path that doesn't exist.
+Confirm the real jar actually exists at that path after the Maven build
+(`ls otp-shaded/target/*.jar`) before relying on the exact filename above
+— it's expected to match, but verify rather than assume, the same way
+this plan's own earlier tasks verified rather than assumed Gradle task
+names. `--build --save <dir>` (real OTP CLI flags, confirmed present in
+`application/src/main/java/org/opentripplanner/standalone/config/CommandLineParameters.java`)
+reads whatever GTFS zip(s) + `.osm.pbf` file(s) are in `<dir>` and writes
+a serialized graph file into that same directory.
 
 - [ ] **Step 3: Document the exact command in `docs/graph-build.md`**
 
-Write the real bounding box, real file paths, and the real command that
-worked in Step 2 — this becomes the reference for building the eventual
-production Denmark-wide graph too (same command, different/larger input
-data).
+Write the real bounding box, the real clipping scripts/commands you used
+(including their real output file sizes), the real Maven build command,
+and the real `--build --save` invocation that worked — this becomes the
+reference for building the eventual production Denmark-wide graph too
+(same command, unclipped full-Denmark input data instead).
 
 - [ ] **Step 4: Copy the resulting graph file into the test resources**
 
