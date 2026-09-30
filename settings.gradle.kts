@@ -15,3 +15,9 @@ dependencyResolutionManagement {
 
 rootProject.name = "otp-server-ui"
 include(":backend")
+include(":otp-utils")
+include(":otp-astar")
+include(":otp-domain-core")
+include(":otp-street")
+include(":otp-routing")
+include(":otp-raptor")

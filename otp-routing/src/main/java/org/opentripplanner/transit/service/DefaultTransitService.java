@@ -1,0 +1,845 @@
+package org.opentripplanner.transit.service;
+
+import gnu.trove.TCollections;
+import gnu.trove.set.TIntSet;
+import gnu.trove.set.hash.TIntHashSet;
+import jakarta.inject.Inject;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import javax.annotation.Nullable;
+import org.locationtech.jts.geom.Envelope;
+import org.opentripplanner.core.model.id.FeedScopedId;
+import org.opentripplanner.core.model.time.TimePeriod;
+import org.opentripplanner.ext.flex.FlexIndex;
+import org.opentripplanner.framework.application.OTPRequestTimeoutException;
+import org.opentripplanner.model.FeedInfo;
+import org.opentripplanner.model.StopTimesInPattern;
+import org.opentripplanner.model.TripTimeOnDate;
+import org.opentripplanner.routing.algorithm.raptoradapter.transit.RaptorTransitData;
+import org.opentripplanner.transfer.constrained.ConstrainedTransferService;
+import org.opentripplanner.transit.api.request.FindRegularStopsByBoundingBoxRequest;
+import org.opentripplanner.transit.api.request.FindRoutesRequest;
+import org.opentripplanner.transit.api.request.FindStopLocationsRequest;
+import org.opentripplanner.transit.api.request.TripOnServiceDateRequest;
+import org.opentripplanner.transit.api.request.TripRequest;
+import org.opentripplanner.transit.api.request.TripTimeOnDateRequest;
+import org.opentripplanner.transit.model.basic.Notice;
+import org.opentripplanner.transit.model.basic.TransitMode;
+import org.opentripplanner.transit.model.calendar.TripCalendars;
+import org.opentripplanner.transit.model.filter.expr.Matcher;
+import org.opentripplanner.transit.model.filter.transit.RegularStopMatcherFactory;
+import org.opentripplanner.transit.model.filter.transit.RouteMatcherFactory;
+import org.opentripplanner.transit.model.filter.transit.StopLocationMatcherFactory;
+import org.opentripplanner.transit.model.filter.transit.TripMatcherFactory;
+import org.opentripplanner.transit.model.filter.transit.TripOnServiceDateMatcherFactory;
+import org.opentripplanner.transit.model.framework.AbstractTransitEntity;
+import org.opentripplanner.transit.model.network.GroupOfRoutes;
+import org.opentripplanner.transit.model.network.Route;
+import org.opentripplanner.transit.model.network.TripPattern;
+import org.opentripplanner.transit.model.organization.Agency;
+import org.opentripplanner.transit.model.organization.Operator;
+import org.opentripplanner.transit.model.site.AreaStop;
+import org.opentripplanner.transit.model.site.Entrance;
+import org.opentripplanner.transit.model.site.GroupStop;
+import org.opentripplanner.transit.model.site.MultiModalStation;
+import org.opentripplanner.transit.model.site.RegularStop;
+import org.opentripplanner.transit.model.site.Station;
+import org.opentripplanner.transit.model.site.StopLocation;
+import org.opentripplanner.transit.model.site.StopLocationsGroup;
+import org.opentripplanner.transit.model.timetable.Timetable;
+import org.opentripplanner.transit.model.timetable.Trip;
+import org.opentripplanner.transit.model.timetable.TripIdAndServiceDate;
+import org.opentripplanner.transit.model.timetable.TripOnServiceDate;
+import org.opentripplanner.transit.model.timetable.TripTimes;
+import org.opentripplanner.transit.repository.TimetableRepositorySnapshot;
+import org.opentripplanner.updater.GraphUpdaterStatus;
+import org.opentripplanner.utils.collection.CollectionsView;
+import org.opentripplanner.utils.collection.SetUtils;
+import org.opentripplanner.utils.time.ServiceDateUtils;
+
+/**
+ * A new instance of this class should be created for each request.
+ * This ensures that the same TimetableRepositorySnapshot is used for the
+ * duration of the request (which may involve several method calls).
+ */
+public class DefaultTransitService implements TransitService {
+
+  private static final TIntSet EMPTY_SERVICE_CODES = TCollections.unmodifiableSet(
+    new TIntHashSet()
+  );
+
+  private final TransitRepository transitRepository;
+
+  private final TransitRepositoryIndex transitRepositoryIndex;
+
+  /**
+   * A nullable timetable snapshot containing real-time updates. If {@code null} then this
+   * instance does not contain any real-time information.
+   */
+  @Nullable
+  private final TimetableRepositorySnapshot timetableSnapshot;
+
+  /**
+   * Helper for fetching stop times for APIs.
+   */
+  private final StopTimesHelper stopTimesHelper;
+
+  private final ReplacementHelper replacementHelper;
+
+  /**
+   * Create a service without a real-time snapshot (and therefore without any real-time data).
+   * This is the constructor used by Dagger injection.
+   */
+  @Inject
+  public DefaultTransitService(TransitRepository transitRepository) {
+    this(transitRepository, null);
+  }
+
+  public DefaultTransitService(
+    TransitRepository transitRepository,
+    @Nullable TimetableRepositorySnapshot timetableSnapshot
+  ) {
+    this.transitRepository = transitRepository;
+    this.transitRepositoryIndex = transitRepository.getTransitRepositoryIndex();
+    this.timetableSnapshot = timetableSnapshot;
+    this.stopTimesHelper = new StopTimesHelper(this);
+    this.replacementHelper = new ReplacementHelper(this, transitRepository, timetableSnapshot);
+  }
+
+  @Override
+  public Optional<List<TripTimeOnDate>> getScheduledTripTimes(Trip trip) {
+    TripPattern tripPattern = findPattern(trip);
+    return Optional.ofNullable(
+      TripTimeOnDate.fromTripTimes(tripPattern.getScheduledTimetable(), trip)
+    );
+  }
+
+  @Override
+  public Optional<List<TripTimeOnDate>> findTripTimesOnDate(Trip trip, LocalDate serviceDate) {
+    TripPattern pattern = findPattern(trip, serviceDate);
+
+    Timetable timetable = findTimetable(pattern, serviceDate);
+
+    // This check is made here to avoid changing TripTimeOnDate.fromTripTimes
+    TripTimes times = timetable.getTripTimes(trip);
+    if (
+      times == null ||
+      !this.getServiceCodesRunningForDate(serviceDate).contains(times.getServiceCode())
+    ) {
+      return Optional.empty();
+    } else {
+      Instant midnight = ServiceDateUtils.asStartOfService(
+        serviceDate,
+        this.getTimeZone()
+      ).toInstant();
+      return Optional.of(TripTimeOnDate.fromTripTimes(timetable, trip, serviceDate, midnight));
+    }
+  }
+
+  @Override
+  public Optional<TripTimes> findTripTimes(Trip trip, LocalDate serviceDate) {
+    return Optional.ofNullable(findPattern(trip, serviceDate))
+      .map(pattern -> findTimetable(pattern, serviceDate))
+      .map(timetable -> timetable.getTripTimes(trip));
+  }
+
+  @Override
+  public Collection<String> listFeedIds() {
+    return this.transitRepository.getFeedIds();
+  }
+
+  @Override
+  public Collection<Agency> listAgencies() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return this.transitRepository.getAgencies();
+  }
+
+  @Override
+  public Optional<Agency> findAgency(FeedScopedId id) {
+    return this.transitRepository.findAgencyById(id);
+  }
+
+  @Override
+  public FeedInfo getFeedInfo(String feedId) {
+    return this.transitRepository.getFeedInfo(feedId);
+  }
+
+  @Override
+  public Collection<Notice> findNotices(AbstractTransitEntity<?, ?> entity) {
+    return this.transitRepository.getNoticesByElement().get(entity);
+  }
+
+  @Override
+  public TripPattern getTripPattern(FeedScopedId id) {
+    return this.transitRepository.getTripPatternForId(id);
+  }
+
+  @Override
+  public Collection<TripPattern> listTripPatterns() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return this.transitRepository.getAllTripPatterns();
+  }
+
+  @Override
+  public Station getStation(FeedScopedId id) {
+    return this.transitRepository.getSiteRepository().getStationById(id);
+  }
+
+  @Override
+  public MultiModalStation getMultiModalStation(FeedScopedId id) {
+    return this.transitRepository.getSiteRepository().getMultiModalStation(id);
+  }
+
+  @Override
+  public Collection<Station> listStations() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return this.transitRepository.getSiteRepository().listStations();
+  }
+
+  @Override
+  public TIntSet getServiceCodesRunningForDate(LocalDate serviceDate) {
+    return getTripCalendars()
+      .getServiceCodesRunningForDate()
+      .getOrDefault(serviceDate, EMPTY_SERVICE_CODES);
+  }
+
+  @Override
+  public Agency getAgency(FeedScopedId id) {
+    return this.transitRepositoryIndex.getAgencyForId(id);
+  }
+
+  @Override
+  public RegularStop getRegularStop(FeedScopedId id) {
+    return this.transitRepository.getSiteRepository().getRegularStop(id);
+  }
+
+  @Override
+  public Entrance getEntrance(FeedScopedId id) {
+    return this.transitRepository.getSiteRepository().getEntrance(id);
+  }
+
+  @Override
+  public AreaStop getAreaStop(FeedScopedId id) {
+    return Objects.requireNonNull(this.transitRepository.getSiteRepository().getAreaStop(id));
+  }
+
+  @Override
+  public Route getRoute(FeedScopedId id) {
+    if (timetableSnapshot != null) {
+      Route realtimeAddedRoute = timetableSnapshot.getRealtimeAddedRoute(id);
+      if (realtimeAddedRoute != null) {
+        return realtimeAddedRoute;
+      }
+    }
+    return transitRepositoryIndex.getRouteForId(id);
+  }
+
+  @Override
+  public Collection<Route> getRoutes(Collection<FeedScopedId> ids) {
+    return ids.stream().map(this::getRoute).filter(Objects::nonNull).toList();
+  }
+
+  @Override
+  public Collection<Route> findRoutes(FindRoutesRequest request) {
+    Matcher<Route> matcher = RouteMatcherFactory.of(request, this.getFlexIndex()::contains);
+    return listRoutes().stream().filter(matcher::match).toList();
+  }
+
+  @Override
+  public Set<Route> findRoutes(StopLocation stop) {
+    OTPRequestTimeoutException.checkForTimeout();
+    Collection<Route> flexRoutes = List.of();
+    var flexIndex = transitRepositoryIndex.getFlexIndex();
+    if (flexIndex != null) {
+      flexRoutes = flexIndex.findRoutes(stop);
+    }
+    var fixedRoutes = transitRepositoryIndex.getRoutesForStop(stop);
+
+    return SetUtils.combine(flexRoutes, fixedRoutes);
+  }
+
+  @Override
+  public Collection<TripPattern> findPatterns(StopLocation stop) {
+    OTPRequestTimeoutException.checkForTimeout();
+    return this.transitRepositoryIndex.getPatternsForStop(stop);
+  }
+
+  @Override
+  public Collection<Operator> listOperators() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return this.transitRepository.getOperators();
+  }
+
+  @Override
+  public Operator getOperator(FeedScopedId id) {
+    return this.transitRepositoryIndex.getOperatorForId(id);
+  }
+
+  @Override
+  public Collection<StopLocation> listStopLocations() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return transitRepository.getSiteRepository().listStopLocations();
+  }
+
+  @Override
+  public Collection<GroupStop> listGroupStops() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return transitRepository.getSiteRepository().listGroupStops();
+  }
+
+  @Override
+  public StopLocation getStopLocation(FeedScopedId id) {
+    return transitRepository.getSiteRepository().getStopLocation(id);
+  }
+
+  @Override
+  public Collection<StopLocation> findStopLocations(FindStopLocationsRequest request) {
+    Matcher<StopLocation> matcher = StopLocationMatcherFactory.of(request);
+    return listStopLocations().stream().filter(matcher::match).toList();
+  }
+
+  @Override
+  public Collection<StopLocation> findStopOrChildStops(FeedScopedId id) {
+    return transitRepository.getSiteRepository().findStopOrChildStops(id);
+  }
+
+  @Override
+  public Collection<StopLocationsGroup> listStopLocationGroups() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return transitRepository.getSiteRepository().listStopLocationGroups();
+  }
+
+  @Override
+  public StopLocationsGroup getStopLocationsGroup(FeedScopedId id) {
+    return transitRepository.getSiteRepository().getStopLocationsGroup(id);
+  }
+
+  @Override
+  public Trip getTrip(FeedScopedId id) {
+    if (timetableSnapshot != null) {
+      Trip trip = timetableSnapshot.getRealTimeAddedTrip(id);
+      if (trip != null) {
+        return trip;
+      }
+    }
+    return getScheduledTrip(id);
+  }
+
+  @Nullable
+  @Override
+  public Trip getScheduledTrip(FeedScopedId id) {
+    return this.transitRepositoryIndex.getTripForId(id);
+  }
+
+  /**
+   * TODO This only supports realtime cancelled trips for now.
+   */
+  @Override
+  public List<TripOnServiceDate> listCanceledTrips() {
+    OTPRequestTimeoutException.checkForTimeout();
+    if (timetableSnapshot == null) {
+      return List.of();
+    }
+    List<TripOnServiceDate> canceledTrips = timetableSnapshot.listCanceledTrips();
+    canceledTrips.sort(new TripOnServiceDateComparator());
+    return canceledTrips;
+  }
+
+  /**
+   * TODO This only supports realtime cancelled trips for now.
+   */
+  @Override
+  public List<TripOnServiceDate> findCanceledTrips(TripOnServiceDateRequest request) {
+    Matcher<TripOnServiceDate> matcher = TripOnServiceDateMatcherFactory.of(
+      request,
+      this::findPattern,
+      this::findScheduledRunningTime
+    );
+    return listCanceledTrips().stream().filter(matcher::match).toList();
+  }
+
+  /**
+   * Resolves a trip's runtime on its service date according to its schedule. The period starts at
+   * the scheduled departure from the first stop and ends at the scheduled arrival at the last
+   * stop.
+   *
+   * @return {@code null} if the schedule of the trip cannot be resolved.
+   */
+  @Nullable
+  private TimePeriod findScheduledRunningTime(TripOnServiceDate tripOnServiceDate) {
+    var trip = tripOnServiceDate.getTrip();
+    var serviceDate = tripOnServiceDate.getServiceDate();
+    var pattern = findPattern(trip, serviceDate);
+    if (pattern == null) {
+      return null;
+    }
+    var tripTimes = findTimetable(pattern, serviceDate).getTripTimes(trip);
+    if (tripTimes == null) {
+      tripTimes = pattern.getScheduledTimetable().getTripTimes(trip);
+    }
+    if (tripTimes == null) {
+      return null;
+    }
+    ZoneId timeZone = trip.getRoute().getAgency().getTimezone();
+    return tripTimes.scheduledRunningTime(
+      ServiceDateUtils.asStartOfService(serviceDate, timeZone).toInstant()
+    );
+  }
+
+  @Override
+  public Collection<Trip> listTrips() {
+    OTPRequestTimeoutException.checkForTimeout();
+    if (timetableSnapshot != null) {
+      return new CollectionsView<>(
+        transitRepositoryIndex.getAllTrips(),
+        timetableSnapshot.listRealTimeAddedTrips()
+      );
+    }
+    return Collections.unmodifiableCollection(transitRepositoryIndex.getAllTrips());
+  }
+
+  @Override
+  public Collection<Route> listRoutes() {
+    OTPRequestTimeoutException.checkForTimeout();
+    if (timetableSnapshot != null) {
+      return new CollectionsView<>(
+        transitRepositoryIndex.getAllRoutes(),
+        timetableSnapshot.listRealTimeAddedRoutes()
+      );
+    }
+    return transitRepositoryIndex.getAllRoutes();
+  }
+
+  @Override
+  public TripPattern findPattern(Trip trip) {
+    if (timetableSnapshot != null) {
+      TripPattern realtimeAddedTripPattern = timetableSnapshot.getRealTimeAddedPatternForTrip(trip);
+      if (realtimeAddedTripPattern != null) {
+        return realtimeAddedTripPattern;
+      }
+    }
+    return this.transitRepositoryIndex.getPatternForTrip(trip);
+  }
+
+  @Override
+  public TripPattern findPattern(Trip trip, LocalDate serviceDate) {
+    TripPattern realtimePattern = findNewTripPatternForModifiedTrip(trip.getId(), serviceDate);
+    if (realtimePattern != null) {
+      return realtimePattern;
+    }
+    return findPattern(trip);
+  }
+
+  @Override
+  public Collection<TripPattern> findPatterns(Route route) {
+    OTPRequestTimeoutException.checkForTimeout();
+    Collection<TripPattern> tripPatterns = new HashSet<>(
+      transitRepositoryIndex.getPatternsForRoute(route)
+    );
+    if (timetableSnapshot != null) {
+      Collection<TripPattern> realTimeAddedPatternForRoute =
+        timetableSnapshot.getRealTimeAddedPatternForRoute(route);
+      tripPatterns.addAll(realTimeAddedPatternForRoute);
+    }
+    return tripPatterns;
+  }
+
+  @Override
+  public MultiModalStation findMultiModalStation(Station station) {
+    return this.transitRepository.getSiteRepository().getMultiModalStationForStation(station);
+  }
+
+  @Override
+  public List<StopTimesInPattern> findStopTimesInPattern(
+    StopLocation stop,
+    Instant startTime,
+    Duration timeRange,
+    int numberOfDeparturesPerPattern,
+    ArrivalDeparture arrivalDeparture,
+    boolean includeCancelledTrips
+  ) {
+    OTPRequestTimeoutException.checkForTimeout();
+    return stopTimesHelper.stopTimesForStop(
+      stop,
+      startTime,
+      timeRange,
+      numberOfDeparturesPerPattern,
+      arrivalDeparture,
+      includeCancelledTrips,
+      TripTimeOnDate.compareByDeparture(),
+      null
+    );
+  }
+
+  @Override
+  public List<StopTimesInPattern> findStopTimesInPattern(
+    StopLocation stop,
+    LocalDate serviceDate,
+    ArrivalDeparture arrivalDeparture,
+    boolean includeCancellations
+  ) {
+    OTPRequestTimeoutException.checkForTimeout();
+    return stopTimesHelper.stopTimesForStop(
+      stop,
+      serviceDate,
+      arrivalDeparture,
+      includeCancellations
+    );
+  }
+
+  @Override
+  public List<TripTimeOnDate> findTripTimesOnDate(
+    StopLocation stop,
+    TripPattern pattern,
+    Instant startTime,
+    Duration timeRange,
+    int numberOfDeparturesPerPattern,
+    ArrivalDeparture arrivalDeparture,
+    boolean includeCancellations
+  ) {
+    OTPRequestTimeoutException.checkForTimeout();
+    return stopTimesHelper.stopTimesForPatternAtStop(
+      stop,
+      pattern,
+      startTime,
+      timeRange,
+      numberOfDeparturesPerPattern,
+      arrivalDeparture,
+      includeCancellations
+    );
+  }
+
+  @Override
+  public List<TripTimeOnDate> findTripTimesOnDate(TripTimeOnDateRequest request) {
+    OTPRequestTimeoutException.checkForTimeout();
+    return stopTimesHelper.findTripTimesOnDate(request);
+  }
+
+  /**
+   * Returns all the patterns for a specific stop. If includeRealtimeUpdates is set, new patterns
+   * added by realtime updates are added to the collection.
+   * A set is used here because trip patterns
+   * that were updated by realtime data is both part of the TransitRepositoryIndex and the TimetableRepositorySnapshot
+   */
+  @Override
+  public Collection<TripPattern> findPatterns(StopLocation stop, boolean includeRealtimeUpdates) {
+    Set<TripPattern> tripPatterns = new HashSet<>(findPatterns(stop));
+
+    if (includeRealtimeUpdates) {
+      if (timetableSnapshot != null) {
+        tripPatterns.addAll(timetableSnapshot.getPatternsForStop(stop));
+      }
+    }
+    return tripPatterns;
+  }
+
+  @Override
+  public Collection<GroupOfRoutes> listGroupsOfRoutes() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return transitRepositoryIndex.getAllGroupOfRoutes();
+  }
+
+  @Override
+  public Collection<Route> findRoutes(GroupOfRoutes groupOfRoutes) {
+    OTPRequestTimeoutException.checkForTimeout();
+    return transitRepositoryIndex.getRoutesForGroupOfRoutes(groupOfRoutes);
+  }
+
+  @Override
+  public GroupOfRoutes getGroupOfRoutes(FeedScopedId id) {
+    return transitRepositoryIndex.getGroupOfRoutesForId(id);
+  }
+
+  /**
+   * Get the most up-to-date timetable for the given TripPattern, as of right now. There should
+   * probably be a less awkward way to do this that just gets the latest entry from the resolver
+   * without making a fake routing request.
+   */
+  @Override
+  public Timetable findTimetable(TripPattern tripPattern, LocalDate serviceDate) {
+    OTPRequestTimeoutException.checkForTimeout();
+    return timetableSnapshot != null
+      ? timetableSnapshot.resolve(tripPattern, serviceDate)
+      : tripPattern.getScheduledTimetable();
+  }
+
+  @Override
+  public TripPattern findNewTripPatternForModifiedTrip(FeedScopedId tripId, LocalDate serviceDate) {
+    if (timetableSnapshot == null) {
+      return null;
+    }
+    return timetableSnapshot.getNewTripPatternForModifiedTrip(tripId, serviceDate);
+  }
+
+  @Override
+  public boolean hasNewTripPatternsForModifiedTrips() {
+    if (timetableSnapshot == null) {
+      return false;
+    }
+    return timetableSnapshot.hasNewTripPatternsForModifiedTrips();
+  }
+
+  @Override
+  public TripOnServiceDate getTripOnServiceDate(FeedScopedId id) {
+    if (timetableSnapshot != null) {
+      TripOnServiceDate tripOnServiceDate = timetableSnapshot.getRealTimeAddedTripOnServiceDateById(
+        id
+      );
+      if (tripOnServiceDate != null) {
+        return tripOnServiceDate;
+      }
+    }
+    return transitRepository.getTripOnServiceDateById(id);
+  }
+
+  @Override
+  public Collection<TripOnServiceDate> listTripsOnServiceDate() {
+    if (timetableSnapshot != null) {
+      return new CollectionsView<>(
+        transitRepository.getAllTripsOnServiceDates(),
+        timetableSnapshot.listRealTimeAddedTripOnServiceDate()
+      );
+    }
+    return transitRepository.getAllTripsOnServiceDates();
+  }
+
+  @Override
+  public TripOnServiceDate getTripOnServiceDate(TripIdAndServiceDate tripIdAndServiceDate) {
+    if (timetableSnapshot != null) {
+      TripOnServiceDate tripOnServiceDate =
+        timetableSnapshot.getRealTimeAddedTripOnServiceDateForTripAndDay(tripIdAndServiceDate);
+      if (tripOnServiceDate != null) {
+        return tripOnServiceDate;
+      }
+    }
+    return transitRepositoryIndex.getTripOnServiceDateForTripAndDay(tripIdAndServiceDate);
+  }
+
+  /**
+   * Returns a list of TripOnServiceDates that match the filtering defined in the request.
+   *
+   * @param request - A TripOnServiceDateRequest object with filtering defined.
+   * @return - A list of TripOnServiceDates
+   */
+  @Override
+  public List<TripOnServiceDate> findTripsOnServiceDate(TripOnServiceDateRequest request) {
+    Matcher<TripOnServiceDate> matcher = TripOnServiceDateMatcherFactory.of(
+      request,
+      this::findPattern,
+      this::findScheduledRunningTime
+    );
+    return listTripsOnServiceDate().stream().filter(matcher::match).toList();
+  }
+
+  @Override
+  public boolean containsTrip(FeedScopedId id) {
+    if (timetableSnapshot != null) {
+      Trip trip = timetableSnapshot.getRealTimeAddedTrip(id);
+      if (trip != null) {
+        return true;
+      }
+    }
+    return this.transitRepositoryIndex.containsTrip(id);
+  }
+
+  @Override
+  public Optional<RegularStop> findStopByScheduledStopPoint(FeedScopedId scheduledStopPoint) {
+    return transitRepository.findStopByScheduledStopPoint(scheduledStopPoint);
+  }
+
+  /**
+   * Returns a list of Trips that match the filtering defined in the request.
+   *
+   * @param request - A TripRequest object with filtering defined.
+   * @return - A list Trips
+   */
+  @Override
+  public List<Trip> getTrips(TripRequest request) {
+    Matcher<Trip> matcher = TripMatcherFactory.of(
+      request,
+      this.getTripCalendars()::listServiceDates
+    );
+    return listTrips().stream().filter(matcher::match).toList();
+  }
+
+  @Override
+  public RaptorTransitData getRaptorTransitData() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return this.transitRepository.getRaptorTransitData();
+  }
+
+  @Override
+  public RaptorTransitData getRealtimeRaptorTransitData() {
+    OTPRequestTimeoutException.checkForTimeout();
+    return timetableSnapshot != null ? timetableSnapshot.getRealtimeRaptorTransitData() : null;
+  }
+
+  @Override
+  public TripCalendars getTripCalendars() {
+    return timetableSnapshot != null
+      ? timetableSnapshot.getTripCalendars()
+      : this.transitRepository.getTripCalendar();
+  }
+
+  @Override
+  public ZoneId getTimeZone() {
+    return this.transitRepository.getTimeZone();
+  }
+
+  public FlexIndex getFlexIndex() {
+    return this.transitRepositoryIndex.getFlexIndex();
+  }
+
+  @Override
+  public Instant getTransitServiceEnds() {
+    return transitRepository.getTransitServiceEnds();
+  }
+
+  @Override
+  public Instant getTransitServiceStarts() {
+    return transitRepository.getTransitServiceStarts();
+  }
+
+  @Override
+  public Collection<RegularStop> findRegularStopsByBoundingBox(Envelope envelope) {
+    OTPRequestTimeoutException.checkForTimeout();
+    return transitRepository.getSiteRepository().findRegularStops(envelope);
+  }
+
+  @Override
+  public Collection<RegularStop> findRegularStopsByBoundingBox(
+    FindRegularStopsByBoundingBoxRequest request
+  ) {
+    OTPRequestTimeoutException.checkForTimeout();
+    Collection<RegularStop> stops = transitRepository
+      .getSiteRepository()
+      .findRegularStops(request.envelope());
+
+    Matcher<RegularStop> matcher = RegularStopMatcherFactory.of(
+      request,
+      stop -> !findPatterns(stop, true).isEmpty()
+    );
+    return stops.stream().filter(matcher::match).toList();
+  }
+
+  @Override
+  public Collection<AreaStop> findAreaStops(Envelope envelope) {
+    OTPRequestTimeoutException.checkForTimeout();
+    return transitRepository.getSiteRepository().findAreaStops(envelope);
+  }
+
+  @Override
+  public GraphUpdaterStatus getUpdaterStatus() {
+    return transitRepository.getUpdaterManager();
+  }
+
+  @Override
+  public List<TransitMode> findTransitModes(StopLocationsGroup station) {
+    return sortByOccurrenceAndReduce(
+      station.getChildStops().stream().flatMap(this::getPatternModesOfStop)
+    ).toList();
+  }
+
+  @Override
+  public List<TransitMode> findTransitModes(StopLocation stop) {
+    return sortByOccurrenceAndReduce(getPatternModesOfStop(stop)).toList();
+  }
+
+  @Override
+  public Set<LocalDate> listServiceDates() {
+    return Collections.unmodifiableSet(getTripCalendars().getServiceCodesRunningForDate().keySet());
+  }
+
+  @Override
+  public Map<LocalDate, TIntSet> getServiceCodesRunningForDate() {
+    return Collections.unmodifiableMap(getTripCalendars().getServiceCodesRunningForDate());
+  }
+
+  @Override
+  public ConstrainedTransferService getConstrainedTransferService() {
+    return transitRepository.getConstrainedTransferService();
+  }
+
+  @Override
+  public boolean transitFeedCovers(Instant dateTime) {
+    return transitRepository.transitFeedCovers(dateTime);
+  }
+
+  @Override
+  public boolean hasScheduledServicesAfter(LocalDate date, StopLocation stop) {
+    return transitRepositoryIndex.hasScheduledServicesAfter(date, stop);
+  }
+
+  @Override
+  public ReplacementHelper getReplacementHelper() {
+    return replacementHelper;
+  }
+
+  /**
+   * Take a stream of T, count the occurrences of each value and return it in order of frequency
+   * from high to low.
+   * <p>
+   * Example: [a,b,b,c,c,c] will return [c,b,a]
+   */
+  private static <T> Stream<T> sortByOccurrenceAndReduce(Stream<T> input) {
+    return input
+      .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
+      .entrySet()
+      .stream()
+      .sorted(Map.Entry.<T, Long>comparingByValue().reversed())
+      .map(Map.Entry::getKey);
+  }
+
+  /**
+   * For each pattern visiting this {@link StopLocation} return its {@link TransitMode}
+   */
+  private Stream<TransitMode> getPatternModesOfStop(StopLocation stop) {
+    if (stop.getVehicleType() != null) {
+      return Stream.of(stop.getVehicleType());
+    } else {
+      return findPatterns(stop).stream().map(TripPattern::getMode);
+    }
+  }
+
+  private int getDepartureTime(TripOnServiceDate trip) {
+    var pattern = findPattern(trip.getTrip());
+    var timetable = timetableSnapshot.resolve(pattern, trip.getServiceDate());
+    return timetable.getTripTimes(trip.getTrip()).getDepartureTime(0);
+  }
+
+  private class TripOnServiceDateComparator implements Comparator<TripOnServiceDate> {
+
+    @Override
+    public int compare(TripOnServiceDate t1, TripOnServiceDate t2) {
+      if (t1.getServiceDate().isBefore(t2.getServiceDate())) {
+        return -1;
+      } else if (t2.getServiceDate().isBefore(t1.getServiceDate())) {
+        return 1;
+      }
+      var departure1 = getDepartureTime(t1);
+      var departure2 = getDepartureTime(t2);
+      if (departure1 < departure2) {
+        return -1;
+      } else if (departure1 > departure2) {
+        return 1;
+      } else {
+        // identical departure day and time, so sort by unique feed-scoped id
+        return t1.getTrip().getId().compareTo(t2.getTrip().getId());
+      }
+    }
+  }
+}

@@ -1,0 +1,307 @@
+package org.opentripplanner.framework.application;
+
+import java.util.Arrays;
+import java.util.Map;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import javax.annotation.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The purpose of this class is to be able to turn features on and off.
+ * <p>
+ * This configuration is optional and found under "feature" in the top level 'otp-config.json'
+ * file.
+ */
+public enum OTPFeature {
+  AlertMetrics(
+    false,
+    false,
+    "Starts a background thread to continuously publish metrics about alerts. Needs to be enabled together with `ActuatorAPI`."
+  ),
+  APIServerInfo(true, false, "Enable the server info endpoint."),
+  APIUpdaterStatus(true, false, "Enable endpoint for graph updaters status."),
+  ConsiderPatternsForDirectTransfers(
+    true,
+    false,
+    "Enable limiting transfers so that there is only a single transfer to each pattern."
+  ),
+  CostlyAssertions(
+    true,
+    false,
+    true,
+    "Enable some resource consuming assertions which are typically not meant to be run in production."
+  ),
+  DebugUi(
+    true,
+    false,
+    """
+    Enable the debug GraphQL client and web UI and located at the root of the web server as well as the debug map tiles it uses.
+    Be aware that the map tiles are not a stable API and can change without notice.
+    Use the [vector tiles feature](sandbox/MapboxVectorTilesApi.md) if you want a stable map tiles API.
+    """
+  ),
+  ExtraTransferLegOnSameStop(
+    false,
+    false,
+    "Should there be a transfer leg when transferring on the very same stop. Note that for in-seat/interlined transfers no transfer leg will be generated."
+  ),
+  FloatingBike(true, false, "Enable floating bike routing."),
+  GtfsGraphQlApi(true, false, "Enable the [GTFS GraphQL API](apis/GTFS-GraphQL-API.md)."),
+  IncludeStopsUsedRealTimeInTransfers(
+    false,
+    false,
+    """
+    When generating transfers, stops without any patterns are excluded to improve performance if
+    `ConsiderPatternsForDirectTransfers` is enabled. However, some stops are only used by trips
+    changed or added by real-time updates. Since transfer generation happens before real-time
+    updates are applied, OTP cannot know which stops will be needed. Instead, OTP will attempt to
+    identify stops likely to be used by real-time updates at import time. Common cases include rail
+    stops (which often have late platform assignments) and stops reserved for replacement services.
+    This is detected examining the stop `subMode`(NeTEx) and `vehicleType`(GTFS). This feature has
+    no effect if `ConsiderPatternsForDirectTransfers` is disabled.
+    """
+  ),
+  /**
+   * If this feature flag is switched on, then the minimum transfer time is not the minimum transfer
+   * time, but the definitive transfer time. Use this to override what we think the transfer will
+   * take according to OSM data, for example if you want to set a very low transfer time like 1
+   * minute, when walking the distance take 1m30s.
+   *
+   * TODO Harmonize the JavaDoc with the user doc and delete JavaDoc
+   */
+  MinimumTransferTimeIsDefinitive(
+    false,
+    false,
+    "If the minimum transfer time is a lower bound (default) or the definitive time for the " +
+      "transfer. Set this to `true` if you want to set a transfer time lower than what OTP derives " +
+      "from OSM data."
+  ),
+
+  OnDemandRaptorTransfer(
+    false,
+    false,
+    """
+    Calculate transfers only when accessed by Raptor, instead of calculating and caching all transfers for the whole graph,
+    for runtime requests which are not pre-cached in `transferCacheRequests` in router-config.json.
+    This may help performance when doing local journey planning in a large graph.
+
+    Requests which are specified in `transferCacheRequests` in router-config.json are not affected and are always pre-cached for the whole graph.
+    """
+  ),
+
+  OptimizeTransfers(
+    true,
+    false,
+    "OTP will inspect all itineraries found and optimize where (which stops) the transfer will happen. Waiting time, priority and guaranteed transfers are taken into account."
+  ),
+
+  ParallelRouting(false, false, "Enable performing parts of the trip planning in parallel."),
+  TransferConstraints(
+    true,
+    false,
+    "Enforce transfers to happen according to the _transfers.txt_ (GTFS) and Interchanges (NeTEx). Turning this _off_ will increase the routing performance a little."
+  ),
+  TransmodelGraphQlApi(
+    true,
+    true,
+    "Enable the [Transmodel (NeTEx) GraphQL API](apis/TransmodelApi.md)."
+  ),
+
+  /* Sandbox extension features - Must be turned OFF by default */
+
+  ActuatorAPI(false, true, "Endpoint for actuators (service health status)."),
+  HttpResponseTimeMetrics(
+    false,
+    true,
+    "Record HTTP response time metrics per client. Requires ActuatorAPI to be enabled."
+  ),
+  AsyncGraphQLFetchers(
+    false,
+    false,
+    "Whether the @async annotation in the GraphQL schema should lead to the fetch being executed asynchronously. This allows batch or alias queries to run in parallel at the cost of consuming extra threads."
+  ),
+  WaitForGraphUpdateInPollingUpdaters(
+    true,
+    false,
+    "Make all polling updaters wait for graph updates to complete before finishing. " +
+      "If this is not enabled, the updaters will finish after submitting the task to update the graph."
+  ),
+  CarPooling(false, true, "Enable the carpooling sandbox module."),
+  Emission(false, true, "Enable the emission sandbox module."),
+  EmpiricalDelay(false, true, "Enable empirical delay sandbox module."),
+  DataOverlay(
+    false,
+    true,
+    "Enable usage of data overlay when calculating costs for the street network."
+  ),
+  DebugRasterTiles(false, true, "Enable debug raster tile API."),
+  FaresV2(false, true, "Enable import of GTFS-Fares v2 data."),
+  FlexRouting(false, true, "Enable FLEX routing."),
+  GoogleCloudStorage(false, true, "Enable Google Cloud Storage integration."),
+  MultiCriteriaGroupMaxFilter(
+    false,
+    false,
+    "Keep the best itinerary with respect to each criteria used in the transit-routing search. " +
+      "For example the itinerary with the lowest cost, fewest transfers, and each unique transit-group " +
+      "(transit-group-priority) is kept, even if the max-limit is exceeded. This is turned off by default " +
+      "for now, until this feature is well tested."
+  ),
+  OjpApi(false, true, "OJP v2.0 API."),
+  RealtimeResolver(
+    false,
+    true,
+    "When routing with ignoreRealtimeUpdates=true, add an extra step which populates results with real-time data"
+  ),
+  ReportApi(false, true, "Enable the report API."),
+  SandboxAPIGeocoder(false, true, "Enable the Geocoder API."),
+  SandboxAPIMapboxVectorTilesApi(false, true, "Enable Mapbox vector tiles API."),
+  SandboxAPIParkAndRideApi(false, true, "Enable park-and-ride endpoint."),
+  Sorlandsbanen(
+    false,
+    true,
+    "Include train Sørlandsbanen in results when searching in south of Norway. Only relevant in Norway."
+  ),
+  TransferAnalyzer(false, true, "Analyze transfers during graph build."),
+  TriasApi(false, true, "TRIAS API.");
+
+  private static final Object TEST_LOCK = new Object();
+
+  private static final Logger LOG = LoggerFactory.getLogger(OTPFeature.class);
+
+  private final boolean enabledByDefault;
+  private final boolean sandbox;
+  private final boolean severeWarningWhenOn;
+  private boolean enabled;
+  private final String doc;
+
+  OTPFeature(boolean defaultEnabled, boolean sandbox, String doc) {
+    this(defaultEnabled, sandbox, false, doc);
+  }
+
+  OTPFeature(boolean defaultEnabled, boolean sandbox, boolean severeWarningWhenOn, String doc) {
+    this.enabledByDefault = defaultEnabled;
+    this.enabled = defaultEnabled;
+    this.sandbox = sandbox;
+    this.severeWarningWhenOn = severeWarningWhenOn;
+    this.doc = doc;
+  }
+
+  /**
+   * This method allows the application to initialize each OTP feature. Only use this method at
+   * startup-time.
+   * <p>
+   * THIS METHOD IS NOT THREAD-SAFE!
+   */
+  public static void enableFeatures(Map<OTPFeature, Boolean> map) {
+    map.forEach(OTPFeature::set);
+  }
+
+  public static void logFeatureSetup() {
+    LOG.info("Features turned on: \n\t{}", valuesAsString(true));
+    LOG.info("Features turned off: \n\t{}", valuesAsString(false));
+    var featureWarnings = enabledValuesWithSevereWarningAsString();
+    if (!featureWarnings.isBlank()) {
+      LOG.warn("FEATURES THAT SHOULD BE TURNED OFF IN PRODUCTION: \n\t{}", featureWarnings);
+    }
+  }
+
+  /**
+   * FOR TEST ONLY
+   *
+   * This method will run the given {@code task} with the feature turned ON. When the task complete
+   * the feature is set back to its original value.
+   * <p>
+   * This method is synchronized on the feature. This way calls to this method or the
+   * {@link #testOff(Runnable)} is prevented from running concurrent. It is safe to use these
+   * methods in a unit-test, but IT IS NOT SAFE TO USE IT IN GENERAL, because the main code is NOT
+   * synchronized.
+   */
+  public void testOn(Runnable task) {
+    testEnabled(true, task);
+  }
+
+  /**
+   * FOR TEST ONLY
+   *
+   * See {@link #testOn(Runnable)}
+   */
+  public void testOff(Runnable task) {
+    testEnabled(false, task);
+  }
+
+  /**
+   * Return {@code true} if feature is turned 'on'.
+   */
+  public boolean isOn() {
+    return enabled;
+  }
+
+  /**
+   * Return {@code true} is enabled by default.
+   */
+  public boolean isEnabledByDefault() {
+    return enabledByDefault;
+  }
+
+  /**
+   * Return {@code true} if feature is turned 'off'.
+   */
+  public boolean isOff() {
+    return !enabled;
+  }
+
+  /**
+   * If feature is turned on, then return supplied object if not return {@code null}.
+   */
+  @Nullable
+  public <T> T isOnElseNull(Supplier<T> supplier) {
+    return isOn() ? supplier.get() : null;
+  }
+
+  /** This feature enable a Sandbox feature */
+  public boolean isSandbox() {
+    return sandbox;
+  }
+
+  /** Return user documentation. */
+  public String doc() {
+    return doc;
+  }
+
+  /* private members */
+
+  /**
+   * Allow unit test and this class to enable/disable a feature.
+   */
+  private void set(boolean enabled) {
+    this.enabled = enabled;
+  }
+
+  private void testEnabled(boolean enabled, Runnable task) {
+    synchronized (TEST_LOCK) {
+      boolean originalValue = this.enabled;
+      try {
+        set(enabled);
+        task.run();
+      } finally {
+        set(originalValue);
+      }
+    }
+  }
+
+  private static String valuesAsString(boolean enabled) {
+    return Arrays.stream(values())
+      .filter(it -> it.enabled == enabled)
+      .map(Enum::name)
+      .collect(Collectors.joining("\n\t"));
+  }
+
+  private static String enabledValuesWithSevereWarningAsString() {
+    return Arrays.stream(values())
+      .filter(it -> it.enabled && it.severeWarningWhenOn)
+      .map(Enum::name)
+      .collect(Collectors.joining("\n\t"));
+  }
+}

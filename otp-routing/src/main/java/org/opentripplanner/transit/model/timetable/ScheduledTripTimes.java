@@ -1,0 +1,425 @@
+package org.opentripplanner.transit.model.timetable;
+
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.BitSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.OptionalInt;
+import java.util.function.Supplier;
+import javax.annotation.Nullable;
+import org.opentripplanner.core.framework.deduplicator.DeduplicatorService;
+import org.opentripplanner.core.model.accessibility.Accessibility;
+import org.opentripplanner.core.model.i18n.I18NString;
+import org.opentripplanner.framework.error.OtpError;
+import org.opentripplanner.transit.model.framework.DataValidationException;
+import org.opentripplanner.transit.model.framework.Deduplicator;
+import org.opentripplanner.transit.model.timetable.booking.BookingInfo;
+import org.opentripplanner.utils.lang.IntUtils;
+import org.opentripplanner.utils.time.DurationUtils;
+import org.opentripplanner.utils.time.TimeUtils;
+
+/**
+ * Regular/planed/scheduled read-only version of {@link TripTimes}. The set of static
+ * trip-times are build during graph-build and can not be changed using real-time updates.
+ *
+ * @see RealTimeTripTimes for real-time version
+ */
+public final class ScheduledTripTimes implements TripTimes<ScheduledTripTimes> {
+
+  /**
+   * When time-shifting from one time-zone to another negative times may occur.
+   */
+  private static final int MIN_TIME = DurationUtils.durationInSeconds("-12h");
+
+  /**
+   * We allow a trip to last for maximum 20 days. In Norway the longest trip is 6 days.
+   */
+  private static final int MAX_TIME = DurationUtils.durationInSeconds("20d");
+
+  /**
+   * Implementation notes: This timeShift allows re-using the same scheduled arrival and departure
+   * time arrays for many ScheduledTripTimes. It is also used in materializing frequency-based
+   * ScheduledTripTimes.
+   */
+  private final int timeShift;
+  private final int serviceCode;
+  private final int[] arrivalTimes;
+  private final int[] departureTimes;
+  private final BitSet timepoints;
+  private final Trip trip;
+  private final List<BookingInfo> dropOffBookingInfos;
+  private final List<BookingInfo> pickupBookingInfos;
+
+  /**
+   * Any number of array elements may point to the same I18NString instance if the headsign remains
+   * unchanged between stops.
+   */
+  @Nullable
+  private final I18NString[] headsigns;
+
+  /**
+   * A 2D array of String containing zero or more Via messages displayed at each stop in the
+   * stop sequence. This reference be null if no stop in the entire sequence of stops has any via
+   * strings. Any subarray may also be null or empty if no Via strings are displayed at that
+   * particular stop. These nulls are allowed to conserve memory in the common case where there are
+   * few or no via messages.
+   */
+  @Nullable
+  private final String[][] headsignVias;
+
+  private final int[] gtfsSequenceOfStopIndex;
+
+  ScheduledTripTimes(ScheduledTripTimesBuilder builder) {
+    this.timeShift = builder.timeShift();
+    this.serviceCode = builder.serviceCode();
+    this.arrivalTimes = Objects.requireNonNull(builder.arrivalTimes());
+    this.departureTimes = Objects.requireNonNull(builder.departureTimes());
+    this.timepoints = Objects.requireNonNull(builder.timepoints());
+    this.trip = Objects.requireNonNull(builder.trip());
+    this.pickupBookingInfos = Objects.requireNonNull(builder.pickupBookingInfos());
+    this.dropOffBookingInfos = Objects.requireNonNull(builder.dropOffBookingInfos());
+    this.headsigns = builder.headsigns();
+    this.headsignVias = builder.headsignVias();
+    this.gtfsSequenceOfStopIndex = builder.gtfsSequenceOfStopIndex();
+    validate();
+  }
+
+  /**
+   * Always provide a deduplicator when building the graph. No deduplication is ok when changing
+   * simple fields like {@code timeShift} and {@code serviceCode} or even the prefered way in an
+   * unittest.
+   */
+  public static ScheduledTripTimesBuilder of() {
+    return new ScheduledTripTimesBuilder(null);
+  }
+
+  public static ScheduledTripTimesBuilder of(DeduplicatorService deduplicator) {
+    return new ScheduledTripTimesBuilder(deduplicator);
+  }
+
+  public ScheduledTripTimesBuilder copyOf(DeduplicatorService deduplicator) {
+    return new ScheduledTripTimesBuilder(
+      timeShift,
+      serviceCode,
+      arrivalTimes,
+      departureTimes,
+      timepoints,
+      trip,
+      dropOffBookingInfos,
+      pickupBookingInfos,
+      headsigns,
+      headsignVias,
+      gtfsSequenceOfStopIndex,
+      deduplicator
+    );
+  }
+
+  /**
+   * @see #copyOf(Deduplicator) copyOf(null)
+   */
+  public ScheduledTripTimesBuilder copyOfNoDuplication() {
+    return copyOf(null);
+  }
+
+  @Override
+  public RealTimeTripTimesBuilder createRealTimeWithoutScheduledTimes() {
+    return new RealTimeTripTimesBuilder(this);
+  }
+
+  @Override
+  public RealTimeTripTimesBuilder createRealTimeFromScheduledTimes() {
+    return RealTimeTripTimesBuilder.fromScheduledTimes(this);
+  }
+
+  @Override
+  public ScheduledTripTimes withAdjustedTimes(Duration shiftDelta) {
+    return copyOfNoDuplication()
+      .plusTimeShift((int) shiftDelta.toSeconds())
+      .build();
+  }
+
+  @Override
+  public int getServiceCode() {
+    return serviceCode;
+  }
+
+  @Override
+  public ScheduledTripTimes withServiceCode(int serviceCode) {
+    return this.copyOfNoDuplication().withServiceCode(serviceCode).build();
+  }
+
+  @Override
+  public int getScheduledArrivalTime(final int stopPos) {
+    return timeShifted(arrivalTimes[stopPos]);
+  }
+
+  @Override
+  public int getArrivalTime(final int stopPos) {
+    return getScheduledArrivalTime(stopPos);
+  }
+
+  @Override
+  public int getArrivalDelay(final int stopPos) {
+    return getArrivalTime(stopPos) - timeShifted(arrivalTimes[stopPos]);
+  }
+
+  @Override
+  public int getScheduledDepartureTime(final int stopPos) {
+    return timeShifted(departureTimes[stopPos]);
+  }
+
+  @Override
+  public int getDepartureTime(final int stopPos) {
+    return getScheduledDepartureTime(stopPos);
+  }
+
+  @Override
+  public int getDepartureDelay(final int stopPos) {
+    return getDepartureTime(stopPos) - timeShifted(departureTimes[stopPos]);
+  }
+
+  @Override
+  public boolean isTimepoint(final int stopIndex) {
+    return timepoints.get(stopIndex);
+  }
+
+  @Override
+  public Trip getTrip() {
+    return trip;
+  }
+
+  @Override
+  public BookingInfo getDropOffBookingInfo(int stopPos) {
+    return dropOffBookingInfos.get(stopPos);
+  }
+
+  @Override
+  public BookingInfo getPickupBookingInfo(int stopPos) {
+    return pickupBookingInfos.get(stopPos);
+  }
+
+  @Override
+  public boolean hasAnyUpdates() {
+    return false;
+  }
+
+  @Override
+  public boolean isCanceledOrDeleted() {
+    return false;
+  }
+
+  @Override
+  public boolean isCanceled() {
+    return false;
+  }
+
+  @Override
+  public boolean isAdded() {
+    return false;
+  }
+
+  @Override
+  public boolean isTripPatternModified() {
+    return false;
+  }
+
+  @Override
+  public boolean isDeleted() {
+    return false;
+  }
+
+  @Override
+  public boolean isTimesModified() {
+    return false;
+  }
+
+  @Override
+  public boolean isCanceledStop(int stopPos) {
+    return false;
+  }
+
+  @Override
+  public boolean hasArrived(int stopPosition) {
+    return false;
+  }
+
+  @Override
+  public boolean hasDeparted(int stopPosition) {
+    return false;
+  }
+
+  @Override
+  public boolean isNoDataStop(int stopPos) {
+    return false;
+  }
+
+  @Override
+  public boolean isPredictionInaccurate(int stopPos) {
+    return false;
+  }
+
+  @Override
+  public boolean isExtraCall(int stopPos) {
+    return false;
+  }
+
+  @Override
+  public boolean isRealTimeUpdated(int stopPos) {
+    return false;
+  }
+
+  @Override
+  public I18NString getTripHeadsign() {
+    return trip.getHeadsign();
+  }
+
+  @Override
+  @Nullable
+  public I18NString getHeadsign(final int stopPos) {
+    return headsigns != null && headsigns[stopPos] != null
+      ? headsigns[stopPos]
+      : getTrip().getHeadsign();
+  }
+
+  @Override
+  public List<String> getHeadsignVias(final int stopPos) {
+    if (headsignVias == null || headsignVias[stopPos] == null) {
+      return List.of();
+    }
+    return List.of(headsignVias[stopPos]);
+  }
+
+  @Override
+  public int getNumStops() {
+    return arrivalTimes.length;
+  }
+
+  @Override
+  public Accessibility getWheelchairAccessibility() {
+    return trip.getWheelchairBoarding();
+  }
+
+  @Override
+  public OccupancyStatus getOccupancyStatus(int ignore) {
+    return OccupancyStatus.NO_DATA_AVAILABLE;
+  }
+
+  @Override
+  public int gtfsSequenceOfStopIndex(final int stopPos) {
+    return gtfsSequenceOfStopIndex[stopPos];
+  }
+
+  @Override
+  public OptionalInt stopPositionForGtfsSequence(int stopSequence) {
+    if (gtfsSequenceOfStopIndex == null) {
+      return OptionalInt.empty();
+    }
+    for (int i = 0; i < gtfsSequenceOfStopIndex.length; i++) {
+      var sequence = gtfsSequenceOfStopIndex[i];
+      if (sequence == stopSequence) {
+        return OptionalInt.of(i);
+      }
+    }
+    return OptionalInt.empty();
+  }
+
+  /**
+   * Returns a time-shifted copy of this TripTimes in which the vehicle passes the given stop index
+   * at the given time.
+   */
+  public ScheduledTripTimes timeShift(final int stopPos, final int time, final boolean depart) {
+    // Adjust 0-based times to match desired stoptime.
+    final int shift = time - (depart ? getDepartureTime(stopPos) : getArrivalTime(stopPos));
+
+    return copyOfNoDuplication().plusTimeShift(shift).build();
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    ScheduledTripTimes that = (ScheduledTripTimes) o;
+    return (
+      timeShift == that.timeShift &&
+      serviceCode == that.serviceCode &&
+      Objects.deepEquals(arrivalTimes, that.arrivalTimes) &&
+      Objects.deepEquals(departureTimes, that.departureTimes) &&
+      Objects.equals(timepoints, that.timepoints) &&
+      Objects.equals(trip, that.trip) &&
+      Objects.equals(dropOffBookingInfos, that.dropOffBookingInfos) &&
+      Objects.equals(pickupBookingInfos, that.pickupBookingInfos) &&
+      Objects.deepEquals(headsigns, that.headsigns) &&
+      Objects.deepEquals(headsignVias, that.headsignVias) &&
+      Objects.deepEquals(gtfsSequenceOfStopIndex, that.gtfsSequenceOfStopIndex)
+    );
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(
+      timeShift,
+      serviceCode,
+      Arrays.hashCode(arrivalTimes),
+      Arrays.hashCode(departureTimes),
+      timepoints,
+      trip,
+      dropOffBookingInfos,
+      pickupBookingInfos,
+      Arrays.hashCode(headsigns),
+      Arrays.deepHashCode(headsignVias),
+      Arrays.hashCode(gtfsSequenceOfStopIndex)
+    );
+  }
+
+  /* package local - only visible to timetable classes */
+
+  int[] copyArrivalTimes() {
+    return IntUtils.shiftArray(timeShift, arrivalTimes);
+  }
+
+  int[] copyDepartureTimes() {
+    return IntUtils.shiftArray(timeShift, departureTimes);
+  }
+
+  I18NString[] copyHeadsigns(Supplier<I18NString[]> defaultValue) {
+    return headsigns == null ? defaultValue.get() : Arrays.copyOf(headsigns, headsigns.length);
+  }
+
+  /* private methods */
+
+  private void validate() {
+    // Validate first departure time and last arrival time
+    validateTimeInRange("departureTime", departureTimes, 0);
+    validateTimeInRange("arrivalTime", arrivalTimes, arrivalTimes.length - 1);
+    // TODO: This class is used by FLEX, so we can not validate increasing TripTimes
+    // validateNonIncreasingTimes();
+  }
+
+  private int timeShifted(int time) {
+    return timeShift + time;
+  }
+
+  private void validateTimeInRange(String field, int[] times, int stopPos) {
+    int t = timeShifted(times[stopPos]);
+
+    if (t < MIN_TIME || t > MAX_TIME) {
+      throw new DataValidationException(
+        OtpError.of(
+          "TripTimeOutOfRange",
+          "The %s is not in range[%s, %s]. Time: %s, stop-pos: %d, trip: %s.",
+          field,
+          DurationUtils.durationToStr(MIN_TIME),
+          DurationUtils.durationToStr(MAX_TIME),
+          TimeUtils.timeToStrLong(t),
+          stopPos,
+          trip.getId()
+        )
+      );
+    }
+  }
+}

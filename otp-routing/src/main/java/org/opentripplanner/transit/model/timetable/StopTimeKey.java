@@ -1,0 +1,37 @@
+package org.opentripplanner.transit.model.timetable;
+
+import org.opentripplanner.core.model.id.FeedScopedId;
+import org.opentripplanner.transit.model.framework.AbstractTransitEntity;
+
+/**
+ * This class is used as a reference to a StopTime wrapping the {@link Trip#getId()} and
+ * {@code stopSequence}. StopTimes instances do not exist in the graph as entities, they are
+ * represented by the {@link TripTimes}, but we use this class to map other entities
+ * (NoticeAssignment) to StopTimes to be able to decorate itineraries with such data.
+ */
+public class StopTimeKey extends AbstractTransitEntity<StopTimeKey, StopTimeKeyBuilder> {
+
+  StopTimeKey(StopTimeKeyBuilder builder) {
+    super(builder.getId());
+  }
+
+  /**
+   * @param tripId
+   * @param stopPositionInPattern the 0 based position in the trip pattern, not GTFS stop_sequence
+   */
+  public static StopTimeKeyBuilder of(FeedScopedId tripId, int stopPositionInPattern) {
+    return new StopTimeKeyBuilder(
+      new FeedScopedId(tripId.getFeedId(), tripId.getId() + "_#" + stopPositionInPattern)
+    );
+  }
+
+  @Override
+  public boolean sameAs(StopTimeKey other) {
+    return getId().equals(other.getId());
+  }
+
+  @Override
+  public StopTimeKeyBuilder copy() {
+    return new StopTimeKeyBuilder(this);
+  }
+}

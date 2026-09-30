@@ -1,0 +1,133 @@
+package org.opentripplanner.transit.model.network;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Test;
+import org.opentripplanner.core.model.i18n.NonLocalizedString;
+import org.opentripplanner.core.model.id.FeedScopedId;
+import org.opentripplanner.core.model.id.FeedScopedIdForTestFactory;
+import org.opentripplanner.transit.model._data.TransitRepositoryForTest;
+import org.opentripplanner.transit.model.basic.SubMode;
+import org.opentripplanner.transit.model.basic.TransitMode;
+import org.opentripplanner.transit.model.organization.Agency;
+import org.opentripplanner.transit.model.organization.Branding;
+import org.opentripplanner.transit.model.organization.Operator;
+
+class RouteTest {
+
+  private static final String ID = "1";
+  private static final String SHORT_NAME = "short name";
+  private static final NonLocalizedString LONG_NAME = new NonLocalizedString("long name");
+  private static final String DESCRIPTION = "description";
+
+  private static final BikeAccess BIKE_ACCESS = BikeAccess.ALLOWED;
+  private static final TransitMode TRANSIT_MODE = TransitMode.BUS;
+  private static final String NETEX_SUBMODE_NAME = "submode";
+  private static final SubMode NETEX_SUBMODE = SubMode.of(NETEX_SUBMODE_NAME);
+  private static final Operator OPERATOR = Operator.of(FeedScopedId.of("x", "operatorId"))
+    .withName("operator name")
+    .build();
+
+  private static final Branding BRANDING = Branding.of(FeedScopedId.of("x", "brandingId")).build();
+  private static final String COLOR = "color";
+  private static final String TEXT_COLOR = "text color";
+  private static final int GTFS_TYPE = 0;
+  private static final String FLEXIBLE_LINE_TYPE = "flexible line type";
+  private static final Integer GTFS_SORT_ORDER = 0;
+  private static final String URL = "url";
+  public static final Agency AGENCY = TransitRepositoryForTest.AGENCY;
+  private static final Route SUBJECT = Route.of(FeedScopedIdForTestFactory.id(ID))
+    .withShortName(SHORT_NAME)
+    .withLongName(LONG_NAME)
+    .withDescription(DESCRIPTION)
+    .withBikesAllowed(BIKE_ACCESS)
+    .withMode(TRANSIT_MODE)
+    .withNetexSubmode(NETEX_SUBMODE_NAME)
+    .withOperator(OPERATOR)
+    .withAgency(AGENCY)
+    .withBranding(BRANDING)
+    .withColor(COLOR)
+    .withTextColor(TEXT_COLOR)
+    .withGtfsType(GTFS_TYPE)
+    .withGtfsSortOrder(GTFS_SORT_ORDER)
+    .withFlexibleLineType(FLEXIBLE_LINE_TYPE)
+    .withUrl(URL)
+    .build();
+
+  @Test
+  void copy() {
+    assertEquals(ID, SUBJECT.getId().getId());
+
+    // Make a copy, and set the same name (nothing is changed)
+    var copy = SUBJECT.copy().withShortName(SHORT_NAME).build();
+
+    assertSame(SUBJECT, copy);
+
+    // Copy and change name
+    copy = SUBJECT.copy().withShortName("v2").build();
+
+    // The two objects are not the same instance, but are equal(same id)
+    assertNotSame(SUBJECT, copy);
+    assertEquals(SUBJECT, copy);
+
+    assertEquals(ID, copy.getId().getId());
+    assertEquals("v2", copy.getShortName());
+    assertEquals(LONG_NAME, copy.getLongName());
+    assertEquals(DESCRIPTION, copy.getDescription());
+    assertEquals(BIKE_ACCESS, copy.getBikesAllowed());
+    assertEquals(TRANSIT_MODE, copy.getMode());
+    assertEquals(NETEX_SUBMODE, copy.getNetexSubmode());
+    assertEquals(OPERATOR, copy.getOperator());
+    assertEquals(AGENCY, copy.getAgency());
+    assertEquals(BRANDING, copy.getBranding());
+    assertEquals(COLOR, copy.getColor());
+    assertEquals(TEXT_COLOR, copy.getTextColor());
+    assertEquals(GTFS_TYPE, copy.getGtfsType());
+    assertEquals(GTFS_SORT_ORDER, copy.getGtfsSortOrder());
+    assertEquals(FLEXIBLE_LINE_TYPE, copy.getFlexibleLineType());
+    assertEquals(URL, copy.getUrl());
+  }
+
+  @Test
+  void sameAs() {
+    assertTrue(SUBJECT.sameAs(SUBJECT.copy().build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withId(FeedScopedIdForTestFactory.id("X")).build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withShortName("X").build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withLongName(new NonLocalizedString("X")).build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withDescription("X").build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withBikesAllowed(BikeAccess.NOT_ALLOWED).build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withMode(TransitMode.RAIL).build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withNetexSubmode("X").build()));
+    assertFalse(
+      SUBJECT.sameAs(
+        SUBJECT.copy()
+          .withOperator(
+            Operator.of(FeedScopedId.of("x", "otherOperatorId"))
+              .withName("other operator name")
+              .build()
+          )
+          .build()
+      )
+    );
+    assertFalse(
+      SUBJECT.sameAs(SUBJECT.copy().withAgency(TransitRepositoryForTest.agency("X")).build())
+    );
+    assertFalse(
+      SUBJECT.sameAs(
+        SUBJECT.copy()
+          .withBranding(Branding.of(FeedScopedId.of("x", "otherBrandingId")).build())
+          .build()
+      )
+    );
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withColor("X").build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withTextColor("X").build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withGtfsType(-1).build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withGtfsSortOrder(99).build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withFlexibleLineType("X").build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withUrl("X").build()));
+  }
+}

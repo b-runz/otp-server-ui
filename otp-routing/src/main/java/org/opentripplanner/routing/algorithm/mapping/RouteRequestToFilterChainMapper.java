@@ -1,0 +1,144 @@
+package org.opentripplanner.routing.algorithm.mapping;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.function.Consumer;
+import javax.annotation.Nullable;
+import org.opentripplanner.ext.ridehailing.DecorateWithRideHailing;
+import org.opentripplanner.ext.ridehailing.RideHailingService;
+import org.opentripplanner.ext.stopconsolidation.DecorateConsolidatedStopNames;
+import org.opentripplanner.ext.stopconsolidation.StopConsolidationService;
+import org.opentripplanner.framework.application.OTPFeature;
+import org.opentripplanner.model.plan.paging.cursor.PageCursorInput;
+import org.opentripplanner.routing.algorithm.filterchain.ItineraryListFilterChain;
+import org.opentripplanner.routing.algorithm.filterchain.ItineraryListFilterChainBuilder;
+import org.opentripplanner.routing.algorithm.filterchain.api.GroupBySimilarity;
+import org.opentripplanner.routing.algorithm.filterchain.framework.spi.ItineraryDecorator;
+import org.opentripplanner.routing.api.request.RouteRequest;
+import org.opentripplanner.routing.api.request.preference.ItineraryFilterPreferences;
+import org.opentripplanner.routing.services.TransitAlertService;
+import org.opentripplanner.street.model.StreetMode;
+import org.opentripplanner.transit.service.TransitService;
+
+public class RouteRequestToFilterChainMapper {
+
+  /** Filter itineraries down to this limit, but not below. */
+  private static final int KEEP_THREE = 3;
+
+  /** Never return more that this limit of itineraries. */
+  private static final int MAX_NUMBER_OF_ITINERARIES = 200;
+
+  public static ItineraryListFilterChain createFilterChain(
+    RouteRequest request,
+    TransitService transitService,
+    TransitAlertService transitAlertService,
+    List<RideHailingService> rideHailingServices,
+    @Nullable ItineraryDecorator emissionItineraryDecorator,
+    @Nullable StopConsolidationService stopConsolidationService,
+    Instant earliestDepartureTimeUsed,
+    Duration searchWindowUsed,
+    boolean removeWalkAllTheWayResults,
+    Consumer<PageCursorInput> pageCursorInputSubscriber
+  ) {
+    var builder = new ItineraryListFilterChainBuilder(request.itinerariesSortOrder());
+
+    // Skip filtering itineraries if generalized-cost is not computed
+    if (!request.preferences().transit().raptor().profile().producesGeneralizedCost()) {
+      return builder.build();
+    }
+
+    // The page cursor has deduplication information only in certain cases.
+    if (request.pageCursor() != null && request.pageCursor().containsItineraryPageCut()) {
+      builder = builder.withPagingDeduplicationFilter(request.pageCursor().itineraryPageCut());
+    }
+
+    // The page cursor has generalizedCostMaxLimit information only when paging is used and
+    // when the RemoveTransitIfStreetOnlyIsBetter filter is enabled.
+    // The generalizedCostMaxLimit is the best street only cost found in the first search.
+    if (request.pageCursor() != null && request.pageCursor().containsGeneralizedCostMaxLimit()) {
+      builder = builder.withGeneralizedCostMaxLimit(request.pageCursor().generalizedCostMaxLimit());
+    }
+
+    ItineraryFilterPreferences params = request.preferences().itineraryFilter();
+    // Group by similar legs filter
+    if (params.groupSimilarityKeepOne() >= 0.5) {
+      builder.addGroupBySimilarity(
+        GroupBySimilarity.createWithOneItineraryPerGroup(params.groupSimilarityKeepOne())
+      );
+    }
+
+    if (params.groupSimilarityKeepThree() >= 0.5) {
+      builder.addGroupBySimilarity(
+        GroupBySimilarity.createWithMoreThanOneItineraryPerGroup(
+          params.groupSimilarityKeepThree(),
+          KEEP_THREE,
+          true,
+          params.groupedOtherThanSameLegsMaxCostMultiplier()
+        )
+      );
+    }
+
+    builder
+      .withMaxNumberOfItineraries(Math.min(request.numItineraries(), MAX_NUMBER_OF_ITINERARIES))
+      .withMaxNumberOfItinerariesCropSection(request.cropItinerariesAt())
+      .withTransitGeneralizedCostLimit(params.transitGeneralizedCostLimit())
+      .withBikeRentalDistanceRatio(params.bikeRentalDistanceRatio())
+      .withParkAndRideDurationRatio(params.parkAndRideDurationRatio())
+      .withNonTransitGeneralizedCostLimit(params.nonTransitGeneralizedCostLimit())
+      .withRemoveTransitWithHigherCostThanBestOnStreetOnly(
+        params.removeTransitWithHigherCostThanBestOnStreetOnly()
+      )
+      .withSameFirstOrLastTripFilter(params.filterItinerariesWithSameFirstOrLastTrip())
+      .withAccessibilityScore(
+        params.useAccessibilityScore() && request.journey().wheelchair(),
+        request.preferences().wheelchair().maxSlope()
+      )
+      .withMinBikeParkingDistance(minBikeParkingDistance(request))
+      .withRemoveTimeshiftedItinerariesWithSameRoutesAndStops(
+        params.removeItinerariesWithSameRoutesAndStops()
+      )
+      .withTransitAlerts(transitAlertService, transitService::findMultiModalStation)
+      .withSearchWindow(earliestDepartureTimeUsed, searchWindowUsed)
+      .withPageCursorInputSubscriber(pageCursorInputSubscriber)
+      .withRemoveWalkAllTheWayResults(removeWalkAllTheWayResults)
+      .withRemoveTransitIfWalkingIsBetter(true)
+      .withFilterDirectFlexBySearchWindow(params.filterDirectFlexBySearchWindow())
+      .withDebugEnabled(params.debug());
+
+    if (!request.preferences().transit().relaxTransitGroupPriority().isNormal()) {
+      builder.withTransitGroupPriority();
+    }
+
+    if (!rideHailingServices.isEmpty()) {
+      builder.withRideHailingDecoratingFilter(
+        new DecorateWithRideHailing(rideHailingServices, request.journey().wheelchair())
+      );
+    }
+
+    if (OTPFeature.Emission.isOn()) {
+      builder.withEmissionItineraryDecorator(emissionItineraryDecorator);
+    }
+
+    if (stopConsolidationService != null && stopConsolidationService.isActive()) {
+      builder.withConsolidatedStopNamesDecorator(
+        new DecorateConsolidatedStopNames(stopConsolidationService)
+      );
+    }
+
+    return builder.build();
+  }
+
+  private static double minBikeParkingDistance(RouteRequest request) {
+    var modes = request.journey().modes();
+    boolean hasBikePark = List.of(modes.accessMode, modes.egressMode).contains(
+      StreetMode.BIKE_TO_PARK
+    );
+
+    double minBikeParkingDistance = 0;
+    if (hasBikePark) {
+      minBikeParkingDistance = request.preferences().itineraryFilter().minBikeParkingDistance();
+    }
+    return minBikeParkingDistance;
+  }
+}

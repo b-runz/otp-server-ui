@@ -1,0 +1,264 @@
+package org.opentripplanner.street.search.state;
+
+import static org.opentripplanner.street.search.state.VehicleRentalState.BEFORE_RENTING;
+import static org.opentripplanner.street.search.state.VehicleRentalState.HAVE_RENTED;
+import static org.opentripplanner.street.search.state.VehicleRentalState.RENTING_FLOATING;
+import static org.opentripplanner.street.search.state.VehicleRentalState.RENTING_FROM_STATION;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import org.opentripplanner.service.vehiclerental.model.GeofencingZone;
+import org.opentripplanner.service.vehiclerental.model.RentalVehicleType.PropulsionType;
+import org.opentripplanner.street.mapping.StreetModeToFormFactorMapper;
+import org.opentripplanner.street.mapping.StreetModeToRentalTraverseModeMapper;
+import org.opentripplanner.street.model.RentalFormFactor;
+import org.opentripplanner.street.model.StreetMode;
+import org.opentripplanner.street.search.TraverseMode;
+import org.opentripplanner.street.search.request.StreetSearchRequest;
+
+/**
+ * StateData contains the components of search state that are unlikely to be changed as often as
+ * time or weight. This avoids frequent duplication, which should have a positive impact on both
+ * time and space use during searches.
+ */
+public class StateData implements Cloneable {
+
+  protected boolean vehicleParked;
+
+  protected VehicleRentalState vehicleRentalState;
+
+  protected boolean mayKeepRentedVehicleAtDestination;
+
+  protected CarPickupState carPickupState;
+
+  /**
+   * The preferred mode, which may differ from backMode when for example walking with a bike. It may
+   * also change during traversal when switching between modes as in the case of Park & Ride or Kiss
+   * & Ride.
+   */
+  protected TraverseMode currentMode;
+
+  /**
+   * The mode that was used to traverse the backEdge
+   */
+  protected TraverseMode backMode;
+
+  protected boolean backWalkingBike;
+
+  public String vehicleRentalNetwork;
+
+  public RentalFormFactor rentalVehicleFormFactor;
+
+  public PropulsionType rentalVehiclePropulsionType;
+
+  /** This boolean is set to true upon transition from a normal street to a no-through-traffic street. */
+  protected boolean enteredNoThroughTrafficArea;
+
+  /**
+   * The geofencing zones that currently contain this state's position. Updated at boundary
+   * crossings by {@link StateEditor#updateGeofencingZones}. Used to enforce per-field restrictions
+   * (no-traversal, no-drop-off) resolved via priority-based precedence.
+   */
+  protected Set<GeofencingZone> currentGeofencingZones = Set.of();
+
+  /**
+   * Tracks networks for which forking a committed branch from this generic state would be
+   * illegal (the path crossed the network's no-traversal zone) or duplicate the deferred BA
+   * fork. Read by NetworkCommitmentHandler and VehicleRentalEdge to skip the redundant work.
+   *
+   * <p>Not consulted by {@link
+   * org.opentripplanner.street.search.strategy.DominanceFunctions} for performance: treating
+   * differing sets as incomparable would split the SPT into a plane per subset.
+   */
+  protected Set<String> committedNetworks = Set.of();
+
+  /** Private constructor, use static methods to get a set of initial states. */
+  private StateData(StreetMode requestMode) {
+    currentMode = switch (requestMode) {
+      // when renting or using a flex vehicle, you start on foot until you have found the vehicle
+      /*
+        CARPOOL maps to TraverseMode.WALK because we want results involving only walking when it makes sense,
+        but we do not want results that includes driving when there are no available carpooling trips.
+       */
+      case
+        NOT_SET,
+        WALK,
+        BIKE_RENTAL,
+        SCOOTER_RENTAL,
+        CAR_RENTAL,
+        FLEXIBLE,
+        CARPOOL -> TraverseMode.WALK;
+      // when cycling all the way or to a stop, you start on your own bike
+      case BIKE, BIKE_TO_PARK -> TraverseMode.BICYCLE;
+      // when driving (not car rental) you start in your own car or your driver's car
+      case CAR, CAR_TO_PARK, CAR_PICKUP, CAR_HAILING -> TraverseMode.CAR;
+    };
+  }
+
+  /**
+   * Returns a set of initial StateDatas based on the options from the RouteRequest
+   */
+  public static List<StateData> getInitialStateDatas(StreetSearchRequest request) {
+    return getInitialStateDatas(
+      request.mode(),
+      request.arriveBy(),
+      request.allowsArrivingInRentalAtDestination()
+    );
+  }
+
+  /**
+   * Returns an initial StateData based on the options from the {@link StreetSearchRequest}. This returns always
+   * only a single state, which is considered the "base case", should there be several possible for
+   * the given {@code request}.
+   */
+  public static StateData getBaseCaseStateData(StreetSearchRequest request) {
+    var stateDatas = getInitialStateDatas(
+      request.mode(),
+      request.arriveBy(),
+      request.allowsArrivingInRentalAtDestination()
+    );
+
+    var baseCaseDatas = switch (request.mode()) {
+      case WALK, BIKE, BIKE_TO_PARK, CAR, CAR_TO_PARK, FLEXIBLE, CARPOOL, NOT_SET -> stateDatas;
+      case CAR_PICKUP, CAR_HAILING -> stateDatas
+        .stream()
+        .filter(d -> d.carPickupState == CarPickupState.IN_CAR)
+        .toList();
+      case BIKE_RENTAL, SCOOTER_RENTAL, CAR_RENTAL -> {
+        if (request.arriveBy()) {
+          yield stateDatas
+            .stream()
+            .filter(
+              d ->
+                d.vehicleRentalState == RENTING_FROM_STATION ||
+                d.vehicleRentalState == RENTING_FLOATING
+            )
+            .toList();
+        } else {
+          yield stateDatas;
+        }
+      }
+    };
+
+    if (baseCaseDatas.size() != 1) {
+      throw new IllegalStateException(
+        "Unable to create only a single state for %s".formatted(request)
+      );
+    }
+    return baseCaseDatas.get(0);
+  }
+
+  private static List<StateData> getInitialStateDatas(
+    StreetMode requestMode,
+    boolean arriveBy,
+    boolean allowArrivingInRentedVehicleAtDestination
+  ) {
+    List<StateData> res = new ArrayList<>();
+    var proto = new StateData(requestMode);
+
+    // carPickup searches may start and end in two distinct states:
+    //   - CAR / IN_CAR where pickup happens directly at the bus stop
+    //   - WALK / WALK_FROM_DROP_OFF or WALK_TO_PICKUP for cases with an initial walk
+    // For forward/reverse searches to be symmetric both initial states need to be created.
+    if (requestMode.includesPickup()) {
+      var inCarPickupStateData = proto.clone();
+      inCarPickupStateData.carPickupState = CarPickupState.IN_CAR;
+      inCarPickupStateData.currentMode = TraverseMode.CAR;
+      res.add(inCarPickupStateData);
+      var walkingPickupStateData = proto.clone();
+      walkingPickupStateData.carPickupState = arriveBy
+        ? CarPickupState.WALK_FROM_DROP_OFF
+        : CarPickupState.WALK_TO_PICKUP;
+      walkingPickupStateData.currentMode = TraverseMode.WALK;
+      res.add(walkingPickupStateData);
+    }
+    // Vehicle rental searches may end in four states (see State#isFinal()):
+    // When searching forward:
+    //   - RENTING_FROM_STATION when allowKeepingRentedVehicleAtDestination is set
+    //   - RENTING_FLOATING
+    //   - HAVE_RENTED
+    // When searching backwards:
+    //   - BEFORE_RENTING
+    else if (requestMode.includesRenting()) {
+      if (arriveBy) {
+        var vehicleMode = StreetModeToRentalTraverseModeMapper.map(requestMode);
+        var formFactor = StreetModeToFormFactorMapper.map(requestMode);
+        if (allowArrivingInRentedVehicleAtDestination) {
+          var keptVehicleStateData = proto.clone();
+          keptVehicleStateData.vehicleRentalState = RENTING_FROM_STATION;
+          keptVehicleStateData.currentMode = vehicleMode;
+          keptVehicleStateData.mayKeepRentedVehicleAtDestination = true;
+          res.add(keptVehicleStateData);
+        }
+        var floatingRentalStateData = proto.clone();
+        floatingRentalStateData.vehicleRentalState = RENTING_FLOATING;
+        floatingRentalStateData.rentalVehicleFormFactor = formFactor;
+        floatingRentalStateData.currentMode = vehicleMode;
+        res.add(floatingRentalStateData);
+        var stationReturnedStateData = proto.clone();
+        stationReturnedStateData.vehicleRentalState = HAVE_RENTED;
+        stationReturnedStateData.currentMode = TraverseMode.WALK;
+        res.add(stationReturnedStateData);
+      } else {
+        var beforeRentalStateData = proto.clone();
+        beforeRentalStateData.vehicleRentalState = BEFORE_RENTING;
+        res.add(beforeRentalStateData);
+      }
+    }
+    // If the itinerary is to begin with a car that is parked for transit the initial state is
+    //   - In arriveBy searches is with the car already "parked" and in WALK mode
+    //   - In departAt searches, we are in CAR mode and "unparked".
+    else if (requestMode.includesParking()) {
+      var parkAndRideStateData = proto.clone();
+      parkAndRideStateData.vehicleParked = arriveBy;
+      parkAndRideStateData.currentMode = parkAndRideStateData.vehicleParked
+        ? TraverseMode.WALK
+        : requestMode.includesBiking()
+          ? TraverseMode.BICYCLE
+          : TraverseMode.CAR;
+      res.add(parkAndRideStateData);
+    } else {
+      res.add(proto.clone());
+    }
+
+    return res;
+  }
+
+  /**
+   * Apply geofencing initial state preparation for arriveBy searches. Populates zone tracking
+   * fields and filters out states that are incompatible with the destination's geofencing zones.
+   *
+   * @return false if this StateData should be excluded from initial states
+   */
+  boolean applyGeofencingDestinationZones(
+    Set<GeofencingZone> destinationZones,
+    Set<String> restrictedNetworks
+  ) {
+    // Skip RENTING_FROM_STATION if destination is in any restricted zone
+    if (vehicleRentalState == RENTING_FROM_STATION && !restrictedNetworks.isEmpty()) {
+      return false;
+    }
+    // Populate zone state on arriveBy rental initial states
+    if (!destinationZones.isEmpty()) {
+      currentGeofencingZones = Set.copyOf(destinationZones);
+    }
+    // Pre-populate committed networks for generic floating states
+    if (
+      vehicleRentalState == RENTING_FLOATING &&
+      vehicleRentalNetwork == null &&
+      !restrictedNetworks.isEmpty()
+    ) {
+      committedNetworks = Set.copyOf(restrictedNetworks);
+    }
+    return true;
+  }
+
+  protected StateData clone() {
+    try {
+      return (StateData) super.clone();
+    } catch (CloneNotSupportedException e1) {
+      throw new IllegalStateException("This is not happening");
+    }
+  }
+}

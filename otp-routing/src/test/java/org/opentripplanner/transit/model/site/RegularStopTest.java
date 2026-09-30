@@ -1,0 +1,126 @@
+package org.opentripplanner.transit.model.site;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.time.ZoneId;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.opentripplanner.core.model.accessibility.Accessibility;
+import org.opentripplanner.core.model.i18n.I18NString;
+import org.opentripplanner.core.model.i18n.NonLocalizedString;
+import org.opentripplanner.core.model.id.FeedScopedId;
+import org.opentripplanner.core.model.id.FeedScopedIdForTestFactory;
+import org.opentripplanner.street.geometry.WgsCoordinate;
+import org.opentripplanner.transit.model._data.TransitRepositoryForTest;
+import org.opentripplanner.transit.model.basic.SubMode;
+import org.opentripplanner.transit.model.basic.TransitMode;
+import org.opentripplanner.transit.service.SiteRepository;
+
+class RegularStopTest {
+
+  private static final String ID = "1";
+  private static final I18NString NAME = new NonLocalizedString("name");
+  private static final I18NString DESCRIPTION = new NonLocalizedString("description");
+  private static final TransitRepositoryForTest TEST_MODEL = TransitRepositoryForTest.of();
+  private static final Station PARENT_STATION = TEST_MODEL.station("stationId").build();
+  private static final String CODE = "code";
+
+  public static final WgsCoordinate COORDINATE = new WgsCoordinate(0, 0);
+  private static final StopLevel LEVEL = new StopLevel("level", 0);
+  private static final Accessibility WHEELCHAIR_ACCESSIBILITY = Accessibility.POSSIBLE;
+  private static final String NETEX_SUBMODE_NAME = "submode";
+  private static final SubMode NETEX_SUBMODE = SubMode.of(NETEX_SUBMODE_NAME);
+  private static final TransitMode VEHICLE_TYPE = TransitMode.BUS;
+  public static final ZoneId TIME_ZONE = ZoneId.of(TransitRepositoryForTest.TIME_ZONE_ID);
+  private static final String PLATFORM_CODE = "platformCode";
+
+  private static final RegularStop SUBJECT = SiteRepository.of()
+    .regularStop(FeedScopedIdForTestFactory.id(ID))
+    .withName(NAME)
+    .withDescription(DESCRIPTION)
+    .withCode(CODE)
+    .withCoordinate(COORDINATE)
+    .withLevel(LEVEL)
+    .withParentStation(PARENT_STATION)
+    .withWheelchairAccessibility(WHEELCHAIR_ACCESSIBILITY)
+    .withNetexVehicleSubmode(NETEX_SUBMODE_NAME)
+    .withVehicleType(VEHICLE_TYPE)
+    .withTimeZone(TIME_ZONE)
+    .withPlatformCode(PLATFORM_CODE)
+    .build();
+
+  @Test
+  void copy() {
+    assertEquals(ID, SUBJECT.getId().getId());
+
+    // Make a copy, and set the same name (nothing is changed)
+    var copy = SUBJECT.copy().withName(NAME).build();
+
+    assertSame(SUBJECT, copy);
+
+    // Copy and change name
+    copy = SUBJECT.copy().withName(new NonLocalizedString("v2")).build();
+
+    // The two objects are not the same instance, but are equal(same id)
+    assertNotSame(SUBJECT, copy);
+    assertEquals(SUBJECT, copy);
+
+    assertEquals(ID, copy.getId().getId());
+    assertEquals("v2", copy.getName().toString());
+    assertEquals(PARENT_STATION, copy.getParentStation());
+    assertEquals(DESCRIPTION, copy.getDescription());
+    assertEquals(CODE, copy.getCode());
+    assertTrue(COORDINATE.sameLocation(copy.getCoordinate()));
+    assertEquals(LEVEL.name(), copy.getLevelName());
+    assertEquals(LEVEL.index(), copy.getLevelIndex());
+    assertEquals(WHEELCHAIR_ACCESSIBILITY, copy.getWheelchairAccessibility());
+    // TODO inconsistent naming
+    assertEquals(NETEX_SUBMODE, copy.getNetexVehicleSubmode());
+    assertEquals(VEHICLE_TYPE, copy.getVehicleType());
+    assertEquals(TIME_ZONE, copy.getTimeZone());
+    assertEquals(PLATFORM_CODE, copy.getPlatformCode());
+  }
+
+  @Test
+  void sameAs() {
+    assertTrue(SUBJECT.sameAs(SUBJECT.copy().build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withId(FeedScopedIdForTestFactory.id("X")).build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withName(new NonLocalizedString("X")).build()));
+    assertFalse(
+      SUBJECT.sameAs(SUBJECT.copy().withDescription(new NonLocalizedString("X")).build())
+    );
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withCoordinate(new WgsCoordinate(1, 1)).build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withUrl(new NonLocalizedString("X")).build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withNetexVehicleSubmode("X").build()));
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withVehicleType(TransitMode.TRAM).build()));
+    assertFalse(
+      SUBJECT.sameAs(
+        SUBJECT.copy().withTimeZone(ZoneId.of(TransitRepositoryForTest.OTHER_TIME_ZONE_ID)).build()
+      )
+    );
+    assertFalse(SUBJECT.sameAs(SUBJECT.copy().withPlatformCode("X").build()));
+  }
+
+  @Test
+  void fareZonesAreSortedById() {
+    var zoneC = FareZone.of(new FeedScopedId("F", "C")).build();
+    var zoneA = FareZone.of(new FeedScopedId("F", "A")).build();
+    var zoneB = FareZone.of(new FeedScopedId("F", "B")).build();
+
+    var stop = SiteRepository.of()
+      .regularStop(FeedScopedIdForTestFactory.id("sortTest"))
+      .withName(NAME)
+      .withCoordinate(COORDINATE)
+      .addFareZone(zoneC)
+      .addFareZone(zoneA)
+      .addFareZone(zoneB)
+      .build();
+
+    assertEquals(List.of(zoneA, zoneB, zoneC), List.copyOf(stop.getFareZones()));
+    assertEquals("A", stop.getFirstZoneAsString());
+  }
+}

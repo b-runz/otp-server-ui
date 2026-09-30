@@ -1,0 +1,226 @@
+package org.opentripplanner.model.plan.leg;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.opentripplanner.core.model.id.FeedScopedIdForTestFactory.id;
+
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.List;
+import java.util.Set;
+import org.junit.jupiter.api.Test;
+import org.opentripplanner._support.time.ZoneIds;
+import org.opentripplanner.core.model.basic.Cost;
+import org.opentripplanner.core.model.i18n.I18NString;
+import org.opentripplanner.model.fare.FareProduct;
+import org.opentripplanner.model.plan.Emission;
+import org.opentripplanner.routing.alertpatch.TransitAlert;
+import org.opentripplanner.transit.model.TransitTestEnvironment;
+import org.opentripplanner.transit.model.TransitTestEnvironmentBuilder;
+import org.opentripplanner.transit.model.TripInput;
+import org.opentripplanner.transit.model.TripOnDateDataFetcher;
+import org.opentripplanner.transit.model.basic.Money;
+import org.opentripplanner.transit.model.network.TripPattern;
+import org.opentripplanner.transit.model.site.RegularStop;
+import org.opentripplanner.transit.model.timetable.RealTimeTripTimes;
+import org.opentripplanner.transit.model.timetable.TripTimes;
+
+class ScheduledTransitLegTest {
+
+  private static final ZonedDateTime START_TIME = OffsetDateTime.parse(
+    "2023-04-17T17:49:06+02:00"
+  ).toZonedDateTime();
+  private static final ZonedDateTime END_TIME = START_TIME.plusMinutes(10);
+  private static final TransitTestEnvironmentBuilder ENV_BUILDER = TransitTestEnvironment.of();
+  private static final RegularStop STOP_0 = ENV_BUILDER.stop("Stop_0", b ->
+    b.withCoordinate(60.0, 10.0)
+  );
+  private static final RegularStop STOP_1 = ENV_BUILDER.stop("Stop_1", b ->
+    b.withCoordinate(60.0, 10.01)
+  );
+  private static final RegularStop STOP_2 = ENV_BUILDER.stop("Stop_2", b ->
+    b.withCoordinate(60.0, 10.02)
+  );
+  private static final TransitTestEnvironment ENV = ENV_BUILDER.addTrip(
+    TripInput.of("trip1")
+      .addStop(STOP_0, "10:00", "10:01")
+      .addStop(STOP_1, "11:00", "11:02")
+      .addStop(STOP_2, "12:00", "12:03")
+  ).build();
+  private static final TripOnDateDataFetcher TRIP_DATA = ENV.tripData("trip1");
+  private static final TripPattern PATTERN = TRIP_DATA.tripPattern();
+  private static final TripTimes TRIP_TIMES = TRIP_DATA.scheduledTripTimes();
+
+  private static final double EXPECTED_DISTANCE = 1111.95;
+  private static final double EXPECTED_DISTANCE_STOP1_TO_STOP2 = EXPECTED_DISTANCE / 2;
+  private static final double DISTANCE_DELTA = 1.0;
+  private static final int BOARD_STOP_INDEX_IN_PATTERN = 0;
+  private static final int ALIGHT_STOP_INDEX_IN_PATTERN = 2;
+  private static final int GENERALIZED_COST = 980;
+  private static final ZoneId ZONE_ID = ZoneIds.BERLIN;
+  private static final Duration DELAY = Duration.ofMinutes(4);
+  private static final RealTimeTripTimes REAL_TIME_TRIP_TIMES =
+    TRIP_TIMES.createRealTimeFromScheduledTimes()
+      .withDepartureTime(
+        BOARD_STOP_INDEX_IN_PATTERN,
+        TRIP_TIMES.getScheduledDepartureTime(BOARD_STOP_INDEX_IN_PATTERN) + (int) DELAY.toSeconds()
+      )
+      .build();
+  private static final ViaLocationType FROM_VIA_LOCATION_TYPE = ViaLocationType.PASS_THROUGH;
+  private static final ViaLocationType TO_VIA_LOCATION_TYPE = ViaLocationType.VISIT;
+
+  private static final Set<TransitAlert> ALERTS = Set.of(
+    TransitAlert.of(id("alert")).withDescriptionText(I18NString.of("alert")).build()
+  );
+
+  private static final Emission EMISSION = Emission.ofCo2Gram(23.0);
+  private static final List<FareProduct> FARE_PRODUCTS = List.of(
+    FareProduct.of(id("fp"), "fare product", Money.euros(10.00f)).build()
+  );
+
+  private final ScheduledTransitLeg subject = new ScheduledTransitLegBuilder()
+    .withTripTimes(REAL_TIME_TRIP_TIMES)
+    .withTripPattern(PATTERN)
+    .withBoardStopIndexInPattern(BOARD_STOP_INDEX_IN_PATTERN)
+    .withAlightStopIndexInPattern(ALIGHT_STOP_INDEX_IN_PATTERN)
+    .withStartTime(START_TIME)
+    .withEndTime(END_TIME)
+    .withServiceDate(START_TIME.toLocalDate())
+    .withZoneId(ZONE_ID)
+    .withGeneralizedCost(GENERALIZED_COST)
+    .withAlerts(ALERTS)
+    .withEmissionPerPerson(EMISSION)
+    .withFareProducts(FARE_PRODUCTS)
+    .withFromViaLocationType(FROM_VIA_LOCATION_TYPE)
+    .withToViaLocationType(TO_VIA_LOCATION_TYPE)
+    .build();
+
+  @Test
+  void testMinimalSetOfFieldsSet() {
+    var subject = new ScheduledTransitLegBuilder()
+      .withTripTimes(TRIP_TIMES)
+      .withTripPattern(PATTERN)
+      .withBoardStopIndexInPattern(BOARD_STOP_INDEX_IN_PATTERN)
+      .withAlightStopIndexInPattern(ALIGHT_STOP_INDEX_IN_PATTERN)
+      .withStartTime(START_TIME)
+      .withEndTime(END_TIME)
+      .withServiceDate(START_TIME.toLocalDate())
+      .withZoneId(ZONE_ID)
+      .build();
+
+    assertEquals(TRIP_TIMES, subject.tripTimes());
+    assertEquals(PATTERN, subject.tripPattern());
+    assertEquals(BOARD_STOP_INDEX_IN_PATTERN, subject.boardStopPosInPattern());
+    assertEquals(ALIGHT_STOP_INDEX_IN_PATTERN, subject.alightStopPosInPattern());
+    assertEquals(START_TIME, subject.startTime());
+    assertEquals(END_TIME, subject.endTime());
+    assertEquals(ZONE_ID, subject.zoneId());
+    assertEquals(Cost.ZERO.toSeconds(), subject.generalizedCost());
+    assertEquals(EXPECTED_DISTANCE, subject.distanceMeters(), DISTANCE_DELTA);
+
+    // Uninitialized fields
+    assertFalse(subject.isRealTimeUpdated());
+    assertEquals(Set.of(), subject.listTransitAlerts());
+    assertEquals(List.of(), subject.fareOffers());
+    assertNull(subject.fromViaLocationType());
+    assertNull(subject.toViaLocationType());
+  }
+
+  @Test
+  void testAccessors() {
+    assertEquals(REAL_TIME_TRIP_TIMES, subject.tripTimes());
+    assertEquals(PATTERN, subject.tripPattern());
+    assertEquals(BOARD_STOP_INDEX_IN_PATTERN, subject.boardStopPosInPattern());
+    assertEquals(ALIGHT_STOP_INDEX_IN_PATTERN, subject.alightStopPosInPattern());
+    assertEquals(START_TIME, subject.startTime());
+    assertEquals(END_TIME, subject.endTime());
+    assertEquals(ZONE_ID, subject.zoneId());
+    assertEquals(GENERALIZED_COST, subject.generalizedCost());
+    assertEquals(EXPECTED_DISTANCE, subject.distanceMeters(), DISTANCE_DELTA);
+    assertEquals(ALERTS, subject.listTransitAlerts());
+    assertEquals(FROM_VIA_LOCATION_TYPE, subject.fromViaLocationType());
+    assertEquals(FROM_VIA_LOCATION_TYPE, subject.from().viaLocationType);
+    assertEquals(TO_VIA_LOCATION_TYPE, subject.toViaLocationType());
+    assertEquals(TO_VIA_LOCATION_TYPE, subject.to().viaLocationType);
+    assertTrue(subject.isRealTimeUpdated());
+    assertEquals(DELAY, subject.start().estimated().delay());
+    assertNotNull(subject.end().estimated());
+    assertEquals(EMISSION, subject.emissionPerPerson());
+    assertEquals(FARE_PRODUCTS, subject.fareOffers());
+  }
+
+  @Test
+  void testCopyOf() {
+    // We need to change something because the copyOf() may return the same instance,
+    // if not changed.
+    var copy = subject.copyOf().withGeneralizedCost(999).build();
+
+    assertEquals(REAL_TIME_TRIP_TIMES, copy.tripTimes());
+    assertEquals(PATTERN, copy.tripPattern());
+    assertEquals(BOARD_STOP_INDEX_IN_PATTERN, copy.boardStopPosInPattern());
+    assertEquals(ALIGHT_STOP_INDEX_IN_PATTERN, copy.alightStopPosInPattern());
+    assertEquals(START_TIME, copy.startTime());
+    assertEquals(END_TIME, copy.endTime());
+    assertEquals(ZONE_ID, copy.zoneId());
+    assertEquals(999, copy.generalizedCost());
+    assertEquals(ALERTS, copy.listTransitAlerts());
+    assertEquals(FROM_VIA_LOCATION_TYPE, copy.fromViaLocationType());
+    assertEquals(TO_VIA_LOCATION_TYPE, copy.toViaLocationType());
+    assertEquals(EMISSION, copy.emissionPerPerson());
+    assertEquals(FARE_PRODUCTS, copy.fareOffers());
+
+    // Distance is unchanged when board/alight positions don't change
+    assertEquals(
+      subject.distanceMeters(),
+      subject.copyOf().withGeneralizedCost(9).build().distanceMeters()
+    );
+  }
+
+  @Test
+  void copyOfRecomputesDistanceWhenBoardStopChanges() {
+    // The subject boards at stop 0 and alights at stop 2 (full pattern).
+    // A copy that changes the board stop to 1 should have a shorter distance.
+    var shorterLeg = subject.copyOf().withBoardStopIndexInPattern(1).build();
+
+    assertTrue(
+      shorterLeg.distanceMeters() < subject.distanceMeters(),
+      "Expected shorter distance when boarding later, but got " +
+        shorterLeg.distanceMeters() +
+        " >= " +
+        subject.distanceMeters()
+    );
+    assertEquals(EXPECTED_DISTANCE_STOP1_TO_STOP2, shorterLeg.distanceMeters(), DISTANCE_DELTA);
+  }
+
+  @Test
+  void testToString() {
+    assertEquals(
+      "ScheduledTransitLeg{" +
+        "from: Place{name: Stop_0, stop: RegularStop{F:Stop_0 Stop_0}, coordinate: (60.0, 10.0), vertexType: TRANSIT, viaLocationType: PASS_THROUGH}, " +
+        "to: Place{name: Stop_2, stop: RegularStop{F:Stop_2 Stop_2}, coordinate: (60.0, 10.02), vertexType: TRANSIT, viaLocationType: VISIT}, " +
+        "startTime: 2023-04-17T17:49:06, " +
+        "endTime: 2023-04-17T17:59:06, " +
+        "realTime: true, " +
+        "distance: 1,112.0m, " +
+        "generalizedCost: $980, " +
+        "agencyId: F:Agency1, " +
+        "routeId: F:Route1, " +
+        "tripId: F:trip1, " +
+        "serviceDate: 2023-04-17, " +
+        "boardRule: SCHEDULED, " +
+        "alightRule: SCHEDULED, " +
+        "transitAlerts: 1 items, " +
+        "fromViaLocationType: PASS_THROUGH, " +
+        "toViaLocationType: VISIT, " +
+        "emissionPerPerson: Emission{CO₂: 23g}, " +
+        "fareProducts: 1 items" +
+        "}",
+      subject.toString()
+    );
+  }
+}

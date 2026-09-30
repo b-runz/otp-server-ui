@@ -1,0 +1,126 @@
+package org.opentripplanner.transit.service;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.stream.Stream;
+import javax.annotation.Nullable;
+import org.opentripplanner.transit.model.basic.SubMode;
+import org.opentripplanner.transit.model.network.ReplacedByRelation;
+import org.opentripplanner.transit.model.network.ReplacementForRelation;
+import org.opentripplanner.transit.model.network.Route;
+import org.opentripplanner.transit.model.timetable.Trip;
+import org.opentripplanner.transit.model.timetable.TripOnServiceDate;
+import org.opentripplanner.transit.repository.TimetableRepositorySnapshot;
+
+/**
+ * <p>Encapsulates the part of Transit Service which deals with Route/Trip/TripOnServiceDate
+ * replacement logic. Has the same lifecycle as Transit Service, so a new instance of this
+ * class is created for each request. This ensures that the same Timetable Snapshot is used
+ * for the duration of the request, but new requests get the current Timetable Snapshot.</p>
+ *
+ * <p>Shared by the GTFS and Transmodel query APIs, which have different names but the same
+ * concepts (Route/Line, Trip/ServiceJourney, TripOnServiceDate/DatedServiceJourney).</p>
+ */
+public class ReplacementHelper {
+
+  // Specially recognized standard GTFS extended route types
+  private static final int REPLACEMENT_RAIL_SERVICE = 110;
+  private static final int RAIL_REPLACEMENT_BUS_SERVICE = 714;
+  private static final List<Integer> REPLACEMENT_EXTENDED_TYPES = List.of(
+    REPLACEMENT_RAIL_SERVICE,
+    RAIL_REPLACEMENT_BUS_SERVICE
+  );
+
+  private final TransitService transitService;
+  private final TransitRepository transitRepository;
+
+  @Nullable
+  private final TimetableRepositorySnapshot timetableSnapshot;
+
+  public ReplacementHelper(
+    TransitService transitService,
+    TransitRepository transitRepository,
+    @Nullable TimetableRepositorySnapshot timetableSnapshot
+  ) {
+    this.transitService = transitService;
+    this.transitRepository = transitRepository;
+    this.timetableSnapshot = timetableSnapshot;
+  }
+
+  public Collection<ReplacedByRelation> getReplacedBy(TripOnServiceDate tripOnServiceDate) {
+    var id = tripOnServiceDate.getId();
+    var replacedBy = transitRepository.getReplacedByTripOnServiceDate(id);
+    Stream<TripOnServiceDate> tripsOnServiceDate;
+    if (timetableSnapshot != null) {
+      tripsOnServiceDate = Stream.concat(
+        replacedBy.stream(),
+        timetableSnapshot.getRealTimeReplacedByTripOnServiceDate(id).stream()
+      );
+    } else {
+      tripsOnServiceDate = replacedBy.stream();
+    }
+    return tripsOnServiceDate.map(ReplacedByRelation::new).toList();
+  }
+
+  public Collection<ReplacementForRelation> getReplacementFor(TripOnServiceDate tripOnServiceDate) {
+    return tripOnServiceDate.getReplacementFor().stream().map(ReplacementForRelation::new).toList();
+  }
+
+  private static boolean isReplacementGtfsType(@Nullable Integer gtfsType) {
+    return gtfsType != null && REPLACEMENT_EXTENDED_TYPES.contains(gtfsType);
+  }
+
+  private static boolean isReplacementSubmode(SubMode submode) {
+    return submode.toString().toLowerCase().contains("replacement");
+  }
+
+  public static boolean isReplacement(SubMode submode, @Nullable Integer gtfsType) {
+    return isReplacementSubmode(submode) || isReplacementGtfsType(gtfsType);
+  }
+
+  public static boolean isReplacementRoute(Route route) {
+    return isReplacement(route.getNetexSubmode(), route.getGtfsType());
+  }
+
+  public static boolean isReplacementTrip(Trip trip) {
+    return isReplacement(trip.getNetexSubMode(), trip.getRoute().getGtfsType());
+  }
+
+  public boolean isReplacementTripOnServiceDate(TripOnServiceDate tripOnServiceDate) {
+    return (
+      !tripOnServiceDate.getReplacementFor().isEmpty() ||
+      isReplacementTrip(tripOnServiceDate.getTrip())
+    );
+  }
+
+  private boolean hasReplacedByTripOnServiceDates(TripOnServiceDate tripOnServiceDate) {
+    var id = tripOnServiceDate.getId();
+    return (
+      !transitRepository.getReplacedByTripOnServiceDate(id).isEmpty() ||
+      (timetableSnapshot != null &&
+        timetableSnapshot.getRealTimeReplacedByTripOnServiceDate(id).isEmpty())
+    );
+  }
+
+  public boolean replacementsExist(Route route) {
+    return transitService
+      .listTripsOnServiceDate()
+      .stream()
+      .anyMatch(
+        tripOnServiceDate ->
+          tripOnServiceDate.getTrip().getRoute().getId().equals(route.getId()) &&
+          hasReplacedByTripOnServiceDates(tripOnServiceDate)
+      );
+  }
+
+  public boolean replacementsExist(Trip trip) {
+    return transitService
+      .listTripsOnServiceDate()
+      .stream()
+      .anyMatch(
+        tripOnServiceDate ->
+          tripOnServiceDate.getTrip().getId().equals(trip.getId()) &&
+          hasReplacedByTripOnServiceDates(tripOnServiceDate)
+      );
+  }
+}

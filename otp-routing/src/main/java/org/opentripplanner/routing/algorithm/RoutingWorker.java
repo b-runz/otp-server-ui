@@ -1,0 +1,489 @@
+package org.opentripplanner.routing.algorithm;
+
+// MONITORING REMOVED: Micrometer's MeterRegistry is not a dependency of this module.
+// import io.micrometer.core.instrument.MeterRegistry;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.util.Collection;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import javax.annotation.Nullable;
+import org.opentripplanner.ext.carpooling.CarpoolingService;
+import org.opentripplanner.ext.dataoverlay.configuration.DataOverlayParameterBindings;
+import org.opentripplanner.ext.flex.FlexParameters;
+import org.opentripplanner.ext.ridehailing.RideHailingService;
+import org.opentripplanner.ext.sorlandsbanen.SorlandsbanenNorwayService;
+import org.opentripplanner.ext.stopconsolidation.StopConsolidationService;
+import org.opentripplanner.framework.application.OTPFeature;
+import org.opentripplanner.framework.application.OTPRequestTimeoutException;
+import org.opentripplanner.model.plan.Itinerary;
+import org.opentripplanner.model.plan.grouppriority.TransitGroupPriorityItineraryDecorator;
+import org.opentripplanner.model.plan.paging.cursor.PageCursorInput;
+import org.opentripplanner.raptor.api.request.RaptorTuningParameters;
+import org.opentripplanner.raptor.api.request.SearchParams;
+import org.opentripplanner.raptor.configure.RaptorConfig;
+import org.opentripplanner.routing.algorithm.filterchain.ItineraryListFilterChain;
+import org.opentripplanner.routing.algorithm.filterchain.framework.spi.ItineraryDecorator;
+import org.opentripplanner.routing.algorithm.mapping.PagingServiceFactory;
+import org.opentripplanner.routing.algorithm.mapping.RouteRequestToFilterChainMapper;
+import org.opentripplanner.routing.algorithm.mapping.RoutingResponseMapper;
+import org.opentripplanner.routing.algorithm.raptoradapter.router.AdditionalSearchDays;
+import org.opentripplanner.routing.algorithm.raptoradapter.router.FilterTransitWhenDirectModeIsEmpty;
+import org.opentripplanner.routing.algorithm.raptoradapter.router.TransitRouter;
+import org.opentripplanner.routing.algorithm.raptoradapter.router.street.DirectFlexRouter;
+import org.opentripplanner.routing.algorithm.raptoradapter.router.street.DirectStreetRouter;
+import org.opentripplanner.routing.algorithm.raptoradapter.transit.TransitTuningParameters;
+import org.opentripplanner.routing.algorithm.raptoradapter.transit.TripSchedule;
+import org.opentripplanner.routing.api.request.RouteRequest;
+import org.opentripplanner.routing.api.request.request.StreetRequest;
+import org.opentripplanner.routing.api.response.InputField;
+import org.opentripplanner.routing.api.response.RoutingError;
+import org.opentripplanner.routing.api.response.RoutingErrorCode;
+import org.opentripplanner.routing.api.response.RoutingResponse;
+import org.opentripplanner.routing.error.RoutingValidationException;
+import org.opentripplanner.routing.framework.DebugTimingAggregator;
+import org.opentripplanner.routing.linking.LinkingContext;
+import org.opentripplanner.routing.linking.LinkingContextFactory;
+import org.opentripplanner.routing.linking.mapping.LinkingContextRequestMapper;
+import org.opentripplanner.routing.services.TransitAlertService;
+import org.opentripplanner.routing.via.ViaCoordinateTransferFactory;
+import org.opentripplanner.service.paging.PagingService;
+import org.opentripplanner.service.streetdetails.StreetDetailsService;
+import org.opentripplanner.service.vehiclerental.VehicleRentalService;
+import org.opentripplanner.street.graph.Graph;
+import org.opentripplanner.street.linking.TemporaryVerticesContainer;
+import org.opentripplanner.street.model.StreetMode;
+import org.opentripplanner.street.service.StreetLimitationParametersService;
+import org.opentripplanner.transfer.regular.RegularTransferService;
+import org.opentripplanner.transit.model.network.grouppriority.TransitGroupPriorityService;
+import org.opentripplanner.transit.service.TransitService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Does a complete transit search, including access and egress legs.
+ * <p>
+ * This class has a request scope, hence the "Worker" name.
+ */
+public class RoutingWorker {
+
+  private static final Logger LOG = LoggerFactory.getLogger(RoutingWorker.class);
+
+  /** An object that accumulates profiling and debugging info for inclusion in the response. */
+  private final DebugTimingAggregator debugTimingAggregator;
+
+  private final RouteRequest request;
+  private final TransitService transitService;
+  private final TransitAlertService transitAlertService;
+  private final Graph graph;
+  private final RaptorConfig<TripSchedule> raptorConfig;
+  // MONITORING REMOVED:
+  // private final MeterRegistry meterRegistry;
+  private final StreetLimitationParametersService streetLimitationParametersService;
+  private final VehicleRentalService vehicleRentalService;
+  private final StreetDetailsService streetDetailsService;
+  private final RegularTransferService transferService;
+  private final FlexParameters flexParameters;
+  private final List<RideHailingService> rideHailingServices;
+  private final ViaCoordinateTransferFactory viaTransferResolver;
+  private final LinkingContextFactory linkingContextFactory;
+  private final TransitTuningParameters transitTuningParameters;
+  private final RaptorTuningParameters raptorTuningParameters;
+
+  @Nullable
+  private final DataOverlayParameterBindings dataOverlayParameterBindings;
+
+  @Nullable
+  private final SorlandsbanenNorwayService sorlandsbanenService;
+
+  @Nullable
+  private final CarpoolingService carpoolingService;
+
+  @Nullable
+  private final ItineraryDecorator emissionItineraryDecorator;
+
+  @Nullable
+  private final StopConsolidationService stopConsolidationService;
+
+  private final ZonedDateTime transitSearchTimeZero;
+  private final AdditionalSearchDays additionalSearchDays;
+  private final TransitGroupPriorityService transitGroupPriorityService;
+  private SearchParams raptorSearchParamsUsed = null;
+  private PageCursorInput pageCursorInput = null;
+
+  /// Lazy-init linkingContext, use {@link #linkingContext()} to access
+  @Nullable
+  private LinkingContext currentLinkingContext = null;
+
+  public RoutingWorker(
+    TransitService transitService,
+    TransitAlertService transitAlertService,
+    Graph graph,
+    RaptorConfig<TripSchedule> raptorConfig,
+    /* MONITORING REMOVED: MeterRegistry meterRegistry, */
+    StreetLimitationParametersService streetLimitationParametersService,
+    VehicleRentalService vehicleRentalService,
+    StreetDetailsService streetDetailsService,
+    RegularTransferService transferService,
+    FlexParameters flexParameters,
+    List<RideHailingService> rideHailingServices,
+    @Nullable DataOverlayParameterBindings dataOverlayParameterBindings,
+    @Nullable SorlandsbanenNorwayService sorlandsbanenService,
+    ViaCoordinateTransferFactory viaTransferResolver,
+    @Nullable CarpoolingService carpoolingService,
+    @Nullable ItineraryDecorator emissionItineraryDecorator,
+    @Nullable StopConsolidationService stopConsolidationService,
+    LinkingContextFactory linkingContextFactory,
+    TransitTuningParameters transitTuningParameters,
+    RaptorTuningParameters raptorTuningParameters,
+    RoutingWorkerRequest workerRequest
+  ) {
+    this.request = workerRequest.request();
+    this.transitSearchTimeZero = workerRequest.transitSearchTimeZero();
+    this.additionalSearchDays = workerRequest.additionalSearchDays();
+    this.transitService = transitService;
+    this.transitAlertService = transitAlertService;
+    this.graph = graph;
+    this.raptorConfig = raptorConfig;
+    // MONITORING REMOVED:
+    // this.meterRegistry = meterRegistry;
+    this.streetLimitationParametersService = streetLimitationParametersService;
+    this.vehicleRentalService = vehicleRentalService;
+    this.streetDetailsService = streetDetailsService;
+    this.transferService = transferService;
+    this.flexParameters = flexParameters;
+    this.rideHailingServices = rideHailingServices;
+    this.dataOverlayParameterBindings = dataOverlayParameterBindings;
+    this.sorlandsbanenService = sorlandsbanenService;
+    this.viaTransferResolver = viaTransferResolver;
+    this.carpoolingService = carpoolingService;
+    this.emissionItineraryDecorator = emissionItineraryDecorator;
+    this.stopConsolidationService = stopConsolidationService;
+    this.linkingContextFactory = linkingContextFactory;
+    this.raptorTuningParameters = raptorTuningParameters;
+    this.transitTuningParameters = transitTuningParameters;
+    this.debugTimingAggregator = new DebugTimingAggregator(
+      /* MONITORING REMOVED: meterRegistry, */
+      request.preferences().system().tags()
+    );
+    this.transitGroupPriorityService = TransitGroupPriorityService.of(
+      request.preferences().transit().relaxTransitGroupPriority(),
+      request.journey().transit().priorityGroupsByAgency(),
+      request.journey().transit().priorityGroupsGlobal()
+    );
+  }
+
+  public RoutingResponse route() {
+    OTPRequestTimeoutException.checkForTimeout();
+    this.debugTimingAggregator.finishedPrecalculating();
+    var result = RoutingResult.empty();
+
+    try (var temporaryVerticesContainer = new TemporaryVerticesContainer()) {
+      this.currentLinkingContext = createLinkingContext(temporaryVerticesContainer);
+
+      if (OTPFeature.ParallelRouting.isOn()) {
+        // TODO: This is not using {@link OtpRequestThreadFactory} which means we do not get
+        //       log-trace-parameters-propagation and graceful timeout handling here.
+        try {
+          var r1 = CompletableFuture.supplyAsync(() -> routeDirectStreet());
+          var r2 = CompletableFuture.supplyAsync(() -> routeDirectFlex());
+          var r3 = CompletableFuture.supplyAsync(() -> routeTransit());
+          var r4 = CompletableFuture.supplyAsync(() -> routeDirectCarpooling());
+
+          result.merge(r1.join(), r2.join(), r3.join(), r4.join());
+        } catch (CompletionException e) {
+          RoutingValidationException.unwrapAndRethrowCompletionException(e);
+        }
+      } else {
+        result.merge(
+          routeDirectStreet(),
+          routeDirectFlex(),
+          routeTransit(),
+          routeDirectCarpooling()
+        );
+      }
+    } catch (RoutingValidationException e) {
+      result.merge(RoutingResult.failed(e.getRoutingErrors()));
+    }
+
+    // Set C2 value for Street and FLEX if transit-group-priority is used
+    result.transform(list ->
+      new TransitGroupPriorityItineraryDecorator(transitGroupPriorityService).decorate(list)
+    );
+
+    debugTimingAggregator.finishedRouting();
+
+    // Filter itineraries
+    {
+      boolean removeWalkAllTheWayResultsFromDirectFlex =
+        request.journey().direct().mode() == StreetMode.FLEXIBLE;
+
+      ItineraryListFilterChain filterChain = RouteRequestToFilterChainMapper.createFilterChain(
+        request,
+        transitService,
+        transitAlertService,
+        rideHailingServices,
+        emissionItineraryDecorator,
+        stopConsolidationService,
+        earliestDepartureTimeUsed(),
+        searchWindowUsed(),
+        result.removeWalkAllTheWayResults() || removeWalkAllTheWayResultsFromDirectFlex,
+        it -> pageCursorInput = it
+      );
+
+      result.transform(filterChain::filter);
+      result.addErrors(filterChain.getRoutingErrors());
+    }
+
+    result.addErrors(checkForEmptyDirectModeResult(result));
+
+    if (LOG.isDebugEnabled()) {
+      LOG.debug(
+        "Return TripPlan with {} filtered itineraries out of {} total.",
+        result
+          .itineraries()
+          .stream()
+          .filter(it -> !it.isFlaggedForDeletion())
+          .count(),
+        result.itineraries().size()
+      );
+    }
+
+    this.debugTimingAggregator.finishedFiltering();
+
+    // Adjust the search-window for the next search if the current search-window
+    // is off (too few or too many results found).
+
+    var pagingService = createPagingService(result.itineraries());
+
+    return RoutingResponseMapper.map(
+      request,
+      result.itineraries(),
+      result.errors(),
+      debugTimingAggregator,
+      transitService,
+      transitAlertService,
+      pagingService
+    );
+  }
+
+  /**
+   * Calculate the earliest-departure-time used in the transit search.
+   * This method returns {@code null} if no transit search is performed.
+   */
+  @Nullable
+  private Instant earliestDepartureTimeUsed() {
+    if (raptorSearchParamsUsed == null) {
+      return null;
+    }
+    if (!raptorSearchParamsUsed.isEarliestDepartureTimeSet()) {
+      return null;
+    }
+    return transitSearchTimeZero
+      .plusSeconds(raptorSearchParamsUsed.earliestDepartureTime())
+      .toInstant();
+  }
+
+  /**
+   * Calculate the search-window earliest-departure-time used in the transit search.
+   * This method returns {@code null} if no transit search is performed.
+   */
+  @Nullable
+  private Duration searchWindowUsed() {
+    return raptorSearchParamsUsed == null
+      ? null
+      : Duration.ofSeconds(raptorSearchParamsUsed.searchWindowInSeconds());
+  }
+
+  private RoutingResult routeDirectStreet() {
+    // Start-on-board trip locations don't have street vertices, so direct routing is not applicable
+    if (request.isStartOnBoardAccessRequest()) {
+      return RoutingResult.empty();
+    }
+    // TODO: Add support for via search to the direct-street search and remove this.
+    //       The direct search is used to prune away silly transit results and it
+    //       would be nice to also support via as a feature in the direct-street
+    //       search.
+    if (request.isViaSearch()) {
+      return RoutingResult.empty();
+    }
+
+    // If no direct mode is set, then we set one.
+    // See {@link FilterTransitWhenDirectModeIsEmpty}
+    var emptyDirectModeHandler = new FilterTransitWhenDirectModeIsEmpty(
+      request.journey().direct().mode(),
+      request.pageCursor() != null
+    );
+    var directBuilder = request.copyOf();
+
+    directBuilder.withJourney(jb ->
+      jb.withDirect(
+        new StreetRequest(
+          emptyDirectModeHandler.resolveDirectMode(),
+          request.journey().direct().rentalDuration()
+        )
+      )
+    );
+
+    debugTimingAggregator.startedDirectStreetRouter();
+    try {
+      return RoutingResult.ok(
+        DirectStreetRouter.route(
+          graph,
+          transitService,
+          streetLimitationParametersService,
+          vehicleRentalService,
+          streetDetailsService,
+          dataOverlayParameterBindings,
+          directBuilder.buildRequest(),
+          linkingContext()
+        ),
+        emptyDirectModeHandler.removeWalkAllTheWayResults()
+      );
+    } catch (RoutingValidationException e) {
+      return RoutingResult.failed(e.getRoutingErrors());
+    } finally {
+      debugTimingAggregator.finishedDirectStreetRouter();
+    }
+  }
+
+  private RoutingResult routeDirectFlex() {
+    if (request.isStartOnBoardAccessRequest()) {
+      return RoutingResult.empty();
+    }
+    if (!OTPFeature.FlexRouting.isOn()) {
+      return RoutingResult.ok(List.of());
+    }
+    debugTimingAggregator.startedDirectFlexRouter();
+    try {
+      return RoutingResult.ok(
+        DirectFlexRouter.route(
+          graph,
+          transitService,
+          transferService,
+          streetDetailsService,
+          flexParameters,
+          dataOverlayParameterBindings,
+          request,
+          additionalSearchDays,
+          linkingContext()
+        )
+      );
+    } catch (RoutingValidationException e) {
+      return RoutingResult.failed(e.getRoutingErrors());
+    } finally {
+      debugTimingAggregator.finishedDirectFlexRouter();
+    }
+  }
+
+  private RoutingResult routeDirectCarpooling() {
+    if (request.isStartOnBoardAccessRequest()) {
+      return RoutingResult.empty();
+    }
+    if (OTPFeature.CarPooling.isOff()) {
+      return RoutingResult.ok(List.of());
+    }
+    debugTimingAggregator.startedDirectCarpoolRouter();
+    try {
+      return RoutingResult.ok(carpoolingService.routeDirect(request));
+    } catch (RoutingValidationException e) {
+      return RoutingResult.failed(e.getRoutingErrors());
+    } finally {
+      debugTimingAggregator.finishedDirectCarpoolRouter();
+    }
+  }
+
+  private RoutingResult routeTransit() {
+    debugTimingAggregator.startedTransitRouting();
+    try {
+      var transitResults = TransitRouter.route(
+        request,
+        transitService,
+        graph,
+        raptorConfig,
+        /* MONITORING REMOVED: meterRegistry, */
+        streetDetailsService,
+        transferService,
+        flexParameters,
+        rideHailingServices,
+        dataOverlayParameterBindings,
+        sorlandsbanenService,
+        viaTransferResolver,
+        transitGroupPriorityService,
+        transitSearchTimeZero,
+        additionalSearchDays,
+        debugTimingAggregator,
+        linkingContext(),
+        carpoolingService
+      );
+      raptorSearchParamsUsed = transitResults.getSearchParams();
+      var itineraries = transitResults.getItineraries();
+      checkIfTransitConnectionExistsInSearchWindow(itineraries);
+      return RoutingResult.ok(itineraries);
+    } catch (RoutingValidationException e) {
+      return RoutingResult.failed(e.getRoutingErrors());
+    } finally {
+      debugTimingAggregator.finishedTransitRouter();
+    }
+  }
+
+  private Instant searchStartTime() {
+    return transitSearchTimeZero.toInstant();
+  }
+
+  private PagingService createPagingService(List<Itinerary> itineraries) {
+    return PagingServiceFactory.createPagingService(
+      searchStartTime(),
+      transitTuningParameters,
+      raptorTuningParameters,
+      request,
+      raptorSearchParamsUsed,
+      pageCursorInput,
+      itineraries
+    );
+  }
+
+  /**
+   * If the transit search was performed but found no itineraries in the search window, the
+   * heuristic found a transit connection exists but no trips run in the current window.
+   */
+  private void checkIfTransitConnectionExistsInSearchWindow(List<Itinerary> itineraries) {
+    if (itineraries.isEmpty() && raptorSearchParamsUsed != null) {
+      throw new RoutingValidationException(
+        List.of(
+          new RoutingError(
+            RoutingErrorCode.NO_TRANSIT_CONNECTION_IN_SEARCH_WINDOW,
+            InputField.DATE_TIME
+          )
+        )
+      );
+    }
+  }
+
+  /**
+   * If this is a direct-only search (no transit) and no itineraries were found, return an error
+   * so the client knows why no results were returned.
+   */
+  private Collection<RoutingError> checkForEmptyDirectModeResult(RoutingResult result) {
+    if (
+      !request.journey().transit().enabled() &&
+      result.errors().isEmpty() &&
+      result.itineraries().stream().allMatch(Itinerary::isFlaggedForDeletion)
+    ) {
+      return List.of(new RoutingError(RoutingErrorCode.NO_DIRECT_MODE_CONNECTION, null));
+    }
+    return List.of();
+  }
+
+  private LinkingContext linkingContext() {
+    return Objects.requireNonNull(currentLinkingContext);
+  }
+
+  private LinkingContext createLinkingContext(TemporaryVerticesContainer container) {
+    var linkingRequest = LinkingContextRequestMapper.map(request);
+    return linkingContextFactory.create(container, linkingRequest);
+  }
+}

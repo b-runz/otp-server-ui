@@ -1,0 +1,52 @@
+package org.opentripplanner.model.modes;
+
+import java.util.Collection;
+import java.util.List;
+import javax.annotation.Nullable;
+import org.opentripplanner.transit.model.basic.SubMode;
+import org.opentripplanner.transit.model.basic.TransitMode;
+
+/**
+ * This class is used to combine more than one filter into one. It keeps a list of filters and
+ * iterate over them in the same order as they are added.
+ */
+public class FilterCollection implements AllowTransitModeFilter {
+
+  /**
+   * Note! We use a list for fast iteration, the performance overhead of using
+   * e.g. a Set here is significant. A test performed on the Norwegian dataset
+   * showed an increase in pattern filtering time from ~25 ms to ~40 ms for
+   * List versus Set.
+   */
+  private final List<AllowTransitModeFilter> filters;
+
+  public FilterCollection(Collection<AllowTransitModeFilter> filters) {
+    this.filters = List.copyOf(filters);
+  }
+
+  @Override
+  public boolean match(
+    TransitMode transitMode,
+    SubMode netexSubMode,
+    @Nullable Integer gtfsExtendedType
+  ) {
+    // Performance is important here, do not use streams
+    for (AllowTransitModeFilter it : filters) {
+      if (it.match(transitMode, netexSubMode, gtfsExtendedType)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  @Override
+  public boolean isModeSelective() {
+    return filters.stream().anyMatch(AllowTransitModeFilter::isModeSelective);
+  }
+
+  public String toString() {
+    // must always give the same order so that it works in assertions, so sort
+    var filtersString = filters.stream().map(AllowTransitModeFilter::toString).sorted().toList();
+    return "FilterCollection" + filtersString;
+  }
+}
