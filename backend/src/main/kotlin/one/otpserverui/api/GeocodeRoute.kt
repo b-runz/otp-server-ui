@@ -50,6 +50,13 @@ private data class LatLngDto(val latitude: Double, val longitude: Double)
  * same wire contract): `POST /v1/places:autocomplete` for suggestions, then
  * `GET /v1/places/{placeId}` with `X-Goog-FieldMask: location` to resolve
  * one candidate's real lat/lon.
+ *
+ * NOTE for callers constructing [httpClient]: it MUST have `ContentNegotiation`
+ * installed with a JSON converter (e.g. `install(ContentNegotiation) { json() }`),
+ * or every `.body<T>()` call here fails at runtime with no compile-time or test
+ * signal — this class has no automated coverage of its own (see GeocodeRouteTest,
+ * which exercises a fake client instead), so a misconfigured client would only
+ * surface via the manual, live-key verification step.
  */
 class GooglePlacesGeocodeClient(private val httpClient: HttpClient, private val apiKey: String) : GeocodeClient {
     override suspend fun search(query: String): List<GeocodeCandidate> {
