@@ -12,6 +12,8 @@ import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import kotlin.io.path.toPath
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -19,6 +21,11 @@ import one.otpserverui.GraphLoader
 import one.otpserverui.routing.HubCatalog
 import one.otpserverui.routing.RoutingEngine
 import org.junit.jupiter.api.Test
+import org.opentripplanner.core.model.basic.Cost
+import org.opentripplanner.model.plan.Itinerary
+import org.opentripplanner.model.plan.Leg
+import org.opentripplanner.model.plan.leg.StreetLeg
+import org.opentripplanner.street.search.TraverseMode
 
 private fun testEngine(): RoutingEngine {
     val fixturePath = checkNotNull(object {}.javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
@@ -121,5 +128,51 @@ class SearchRouteTest {
             val body = Json.decodeFromString<SearchErrorResponse>(response.bodyAsText())
             assertThat(body.error).isEqualTo("invalid_request")
         }
+    }
+
+    // Synthetic legs built with OTP's own vendored `StreetLegBuilder`, same technique
+    // `HubRoutingTest.kt`'s `streetLeg` helper uses for `trimHubConnector`'s own tests --
+    // `stitchItineraries` only feeds these legs through `HubRouting.trimHubConnector` (which reads
+    // `isTransitLeg`, always false for a `StreetLeg`, and `distanceMeters()`) before concatenating
+    // and rebuilding, so no other field on the leg needs to be realistic.
+    private fun streetLeg(distanceMeters: Double): Leg {
+        val start = ZonedDateTime.of(2026, 9, 13, 16, 0, 0, 0, ZoneId.of("Europe/Copenhagen"))
+        return StreetLeg.of()
+            .withMode(TraverseMode.WALK)
+            .withStartTime(start)
+            .withEndTime(start.plusMinutes(1))
+            .withDistanceMeters(distanceMeters)
+            .build()
+    }
+
+    // `Itinerary.build()` NPEs unless `withGeneralizedCost(...)` is called first (the bug
+    // `stitchItineraries` itself works around) -- so every synthetic itinerary built for these
+    // tests must supply one explicitly.
+    private fun syntheticItinerary(legs: List<Leg>, generalizedCostSeconds: Int): Itinerary =
+        Itinerary.ofDirect(legs).withGeneralizedCost(Cost.costOfSeconds(generalizedCostSeconds)).build()
+
+    @Test
+    fun `stitchItineraries trims the hub connector legs and concatenates in order without NPE`() {
+        val keptA = streetLeg(200.0)
+        val connectorAtEndOfA = streetLeg(49.0)
+        val legA = syntheticItinerary(listOf(keptA, connectorAtEndOfA), generalizedCostSeconds = 100)
+
+        val connectorAtStartOfB = streetLeg(49.0)
+        val keptB = streetLeg(300.0)
+        val legB = syntheticItinerary(listOf(connectorAtStartOfB, keptB), generalizedCostSeconds = 150)
+
+        val stitched = stitchItineraries(legA, legB)
+
+        assertThat(stitched.legs()).containsExactly(keptA, keptB).inOrder()
+    }
+
+    @Test
+    fun `stitchItineraries sums the two source itineraries' generalized costs`() {
+        val legA = syntheticItinerary(listOf(streetLeg(200.0)), generalizedCostSeconds = 100)
+        val legB = syntheticItinerary(listOf(streetLeg(300.0)), generalizedCostSeconds = 150)
+
+        val stitched = stitchItineraries(legA, legB)
+
+        assertThat(stitched.generalizedCost()).isEqualTo(250)
     }
 }

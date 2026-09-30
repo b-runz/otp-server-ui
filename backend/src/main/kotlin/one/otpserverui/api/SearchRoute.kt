@@ -33,7 +33,7 @@ import org.opentripplanner.street.geometry.WgsCoordinate
  * `ItineraryBuilder.java`'s `calculateGeneralizedCostWithoutPenalty()`), so the combined cost
  * (the two source itineraries' own [Itinerary.generalizedCost] added together) is supplied here.
  */
-private fun stitchItineraries(legA: Itinerary, legB: Itinerary): Itinerary {
+internal fun stitchItineraries(legA: Itinerary, legB: Itinerary): Itinerary {
     val trimmedA = HubRouting.trimHubConnector(legA.legs(), fromEnd = true)
     val trimmedB = HubRouting.trimHubConnector(legB.legs(), fromEnd = false)
     val combinedCost = Cost.costOfSeconds(legA.generalizedCost() + legB.generalizedCost())
