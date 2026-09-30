@@ -418,49 +418,128 @@ git commit -m "Vendor OTP's graph-loading code (SerializedGraphObject + kryosupp
 
 ---
 
-### Task 4: Build a real test-fixture serialized graph
+### Task 4: Build a real test-fixture serialized graph (throwaway builder)
 
 **Files:**
+- Create: `.tools/graph-builder/` (a small, standalone, throwaway Gradle
+  project — **never committed to this repo**, see `.gitignore` note
+  below; its only job is producing a real, version-compatible
+  `graph.obj`, then it can be discarded)
 - Create: `otp-routing/src/test/resources/tiny-fixture-graph.obj` (binary,
-  built by this task's own Step 2, not hand-written)
+  the throwaway builder's real output, copied in — not hand-written)
 - Modify: `otp-routing/src/test/java/org/opentripplanner/routing/graph/SerializedGraphObjectRoundTripTest.java`
   (remove the `@Disabled` from Task 3)
-- Create: `docs/graph-build.md` (documents the exact command used, so this
-  is reproducible)
+- Modify: `.gitignore` (add `.tools/` if not already covered — it already
+  is, from Task 1/3's own additions; confirm rather than duplicate)
+- Create: `docs/graph-build.md` (documents what the throwaway builder does
+  and how to re-run it, so this is reproducible without needing to
+  re-derive any of this task's own investigation)
 
 **Interfaces:**
-- Produces: `otp-routing/src/test/resources/tiny-fixture-graph.obj`, a real
-  serialized graph covering a small real area — used by this task's own
-  test, and by every routing-logic test from Task 6 onward.
+- Produces: `otp-routing/src/test/resources/tiny-fixture-graph.obj`, a
+  real serialized graph — used by this task's own test, and by every
+  routing-logic test from Task 6 onward.
 
-**Corrections from earlier plan research (read before starting):** the
-`OpenTripPlanner` checkout is a **Maven** project (`pom.xml`, not
-`build.gradle.kts` — every module has its own `pom.xml`), not Gradle as an
-earlier draft of this plan assumed. Neither `mvn` nor a Maven wrapper
-exists on this machine by default; a portable Apache Maven 3.9.9 has
-already been downloaded and extracted to
-`C:\Users\bru\spare-source\otp-server-ui\.tools\apache-maven-3.9.9\bin\mvn.cmd`
-(gitignored — a real, working tool install, not something to commit) for
-exactly this task. Maven Central rate-limiting is a real, recurring risk
-on this machine (already hit twice, for Gradle and for a raw Maven
-resolve) — a settings file routing Maven through the same JetBrains
-mirror already used elsewhere in this plan exists at
-`C:\Users\bru\spare-source\otp-server-ui\.tools\maven-settings.xml`; pass
-it to every `mvn` invocation via `-s`.
+**Why a throwaway builder, not the real `application`/`otp-shaded` Maven
+build (corrects an earlier draft of this task):** real OTP's own `pom.xml`
+unconditionally depends on `google-cloud-storage`/`google-cloud-pubsub`
+(for an optional GCS `DataSource` backend and an optional SIRI/Pubsub
+real-time updater — neither used by this project), which pulls in
+`com.google.cloud:libraries-bom` — a version-alignment BOM covering
+literally every GCP service (400+ sub-BOMs). Resolving its full POM graph
+took over 30 minutes even through the JetBrains mirror (confirmed: this
+plan's own pre-dispatch research got roughly a third of the way through
+in ~20 minutes across several real, independently-verified attempts)
+purely for two dependencies this project never calls. Verified directly:
+neither `GraphBuilder.java` nor the real `graph_builder.*`/`gtfs.*`/
+`osm.*` packages reference Google Cloud at all — their own real
+dependencies are `com.beust:jcommander`, `com.csvreader:javacsv`,
+`com.google.guava:guava`, `org.apache.commons:commons-*`,
+`org.onebusaway:onebusaway-gtfs`, `org.locationtech.jts:jts-core`
+(already vendored), `org.slf4j:slf4j-api` (already vendored) — none of
+which touch `com.google.cloud:*` either. A small, separate project
+vendoring just the graph-building slice avoids the whole GCP BOM
+resolution entirely.
 
-- [ ] **Step 1: Source and clip a small real GTFS + OSM pair**
+**Also verified: elevation/DEM support (`graph_builder.module.ned.*`,
+which pulls in GeoTools/JAI — a second, separate large dependency
+surface) is genuinely optional, not a hard dependency of graph building.**
+`GraphBuilder.java` itself never references it; only the config-driven
+wiring layer (`GraphBuilderFactory`/`GraphBuilderModules`, which parses
+`build-config.json` and conditionally adds modules) does. Since this
+task's own driver code constructs the module list directly (see Step 3),
+elevation is simply never added — skip `graph_builder.module.ned.*`, its
+`services.ned.*` counterpart, and their GeoTools/JAI dependencies
+entirely. Denmark is flat; this project has no use for elevation profiles
+regardless.
 
-The real, raw, full-Denmark source files already exist locally (found
-during this plan's own pre-dispatch research):
+**The throwaway builder is genuinely throwaway:** it lives under
+`.tools/graph-builder/` (already gitignored via `.tools/`), is never
+referenced by `settings.gradle.kts`'s own `include(...)` list, and never
+gets a task-review the way `otp-server-ui`'s own real modules do — its
+only deliverable is the `tiny-fixture-graph.obj` binary it produces. Feel
+free to structure its own internals pragmatically (this task's own
+judgment) rather than to this plan's usual code-quality bar.
+
+- [ ] **Step 1: Vendor the graph-building source slice**
+
+From the same exact commit (`61a3af6798`) already used for everything
+else in this plan, copy these real upstream packages verbatim into
+`.tools/graph-builder/src/main/java/org/opentripplanner/`:
+`graph_builder/**` (144 files per this plan's own earlier research)
+EXCEPT `graph_builder/module/ned/**` and `graph_builder/services/ned/**`
+(elevation, skipped — see above), `gtfs/**` (55 files), `osm/**` (55
+files, note this excludes `graph_builder/module/osm/**`, which stays —
+that's the street-graph-building orchestration, a different package from
+the raw `osm/**` OSM-parsing one). Compile (`./gradlew` from this
+throwaway project's own root, once Step 2's `build.gradle.kts` exists)
+and fix whatever additional real upstream files the compiler surfaces as
+missing (same "copy the real error's missing type from the same upstream
+checkout" pattern Task 3 already used) — expect a genuine iteration loop
+here, not a one-shot clean compile; this is real, substantial vendoring,
+size-comparable to Task 2's own 6-module effort.
+
+- [ ] **Step 2: Write the throwaway project's own `build.gradle.kts`**
+
+A minimal Gradle project (own `settings.gradle.kts`/`build.gradle.kts`
+under `.tools/graph-builder/`, NOT part of `otp-server-ui`'s own Gradle
+reactor) depending on:
+- This repo's own already-built `otp-utils`/`otp-domain-core`/`otp-astar`/
+  `otp-street`/`otp-raptor`/`otp-routing` modules (reference their real
+  built jars directly, e.g. `files("../../otp-utils/build/libs/otp-utils.jar")`
+  for each, or a Gradle composite build via `includeBuild("../..")` if
+  that proves simpler — your judgment on which is less friction).
+- The real dependencies named above (`jcommander`, `javacsv`, `guava`,
+  `commons-lang3`/`commons-io` — check the real imports for exact
+  `commons-*` artifacts needed, `onebusaway-gtfs`, plus whatever else the
+  compiler surfaces in Step 1).
+- Route dependency resolution through the same JetBrains mirror this
+  whole plan already uses (`https://cache-redirector.jetbrains.com/maven-central`)
+  — copy the exact `dependencyResolutionManagement` pattern from this
+  repo's own root `settings.gradle.kts`.
+
+- [ ] **Step 3: Write a small driver `main()`**
+
+Construct the needed `GraphBuilder` modules directly (read
+`graph_builder/GraphBuilder.java`'s real public API first — its own
+constructor/module-list shape, confirmed to exist from Step 1's vendored
+copy — to get the exact real method names, don't guess): a GTFS module
+reading a local GTFS zip, an OSM/street module reading a local `.osm.pbf`
+file, run the real `GraphBuilder`, then call
+`SerializedGraphObject.save(...)` (already-vendored, Task 3) to write the
+result to a local path. This driver only needs to support exactly the
+inputs this task needs — a hardcoded local file path is fine, this is
+throwaway code.
+
+- [ ] **Step 4: Source a small real GTFS + OSM pair**
+
+The real, raw, full-Denmark source files already exist locally:
 `C:\Users\bru\spare-source\bikebus\pipeline\build\sources\denmark-latest.osm.pbf`
-(494 MB) and `...\pipeline\build\sources\GTFS.zip` (53 MB, a standard GTFS
-feed: `agency/attributions/calendar/calendar_dates/frequencies/routes/
-shapes/stops/stop_times/transfers/trips.txt`). Both are full-country —
-clip both down to a small Aarhus-area extract before feeding them to real
-OTP, using the exact same bounding box `bikebus`'s own pipeline already
-uses for its own Aarhus dev fixture (found in its own tests/README, reuse
-verbatim so this plan's ported tests can reuse `bikebus`'s own known-good
-expected values):
+(494 MB) and `...\pipeline\build\sources\GTFS.zip` (53 MB). Clip both down
+to a small Aarhus-area extract before feeding them to the Step 3 driver,
+using the exact same bounding box `bikebus`'s own pipeline already uses
+for its own Aarhus dev fixture (reuse verbatim so this plan's ported tests
+can reuse `bikebus`'s own known-good expected values):
 
 ```
 min_lon=10.05  min_lat=56.08  max_lon=10.30  max_lat=56.25
@@ -483,66 +562,55 @@ zip). Write a small, real Python script: read `stops.txt` and keep stops
 within the bbox (plus their `parent_station`, if any); read
 `stop_times.txt`/`trips.txt` and keep only rows referencing kept stops (a
 trip that touches at least one kept stop is fine to keep in full, even if
-some of its other stops fall outside the bbox — real OTP tolerates a stop
-with no nearby street connectivity, it just won't be walk-accessible,
-which doesn't matter for this small fixture's own purpose); keep only the
+some of its other stops fall outside the bbox); keep only the
 `routes.txt`/`agency.txt`/`calendar.txt`/`calendar_dates.txt` rows those
 kept trips actually reference. Write a real, valid GTFS zip (same file
 set, filtered rows) as the result. Given `stop_times.txt` (220 MB) and
 `shapes.txt` (110 MB) are large, read them by streaming (`csv.DictReader`
 row-by-row), not by loading the whole file into memory at once.
 
-Document the exact bbox and the real clipped file sizes you end up with in
-`docs/graph-build.md` (Step 3 below) — this is genuinely fixture-scoped
-judgment (there's no single "correct" filtering strictness), so record
-what you actually did and why, not just the numbers.
+- [ ] **Step 5: Run the throwaway builder and confirm the output loads**
 
-- [ ] **Step 2: Build a real graph from that data using standalone OTP**
+Run the Step 3 driver against the Step 4 clipped inputs, producing a real
+`graph.obj`. Then confirm it actually loads via THIS repo's own vendored
+`SerializedGraphObject` (a quick, temporary test in `otp-routing` pointed
+at the produced file is fine to prove this before doing Step 6's real,
+permanent copy — delete the temporary test afterward). This is the real
+acceptance criterion for this whole task: a version-277 file (confirmed:
+`OpenTripPlanner/pom.xml`'s own `<otp.serialization.version.id>` property
+— re-check it hasn't drifted from 277 since this plan's own research, the
+version used for everything else this plan vendors) that this project's
+own code can genuinely deserialize.
 
-```bash
-MVN="/c/Users/bru/spare-source/otp-server-ui/.tools/apache-maven-3.9.9/bin/mvn.cmd"
-SETTINGS="/c/Users/bru/spare-source/otp-server-ui/.tools/maven-settings.xml"
-cd /c/Users/bru/spare-source/bikebus/OpenTripPlanner
-"$MVN" -s "$SETTINGS" -pl otp-shaded -am package -DskipTests -q
-# Real, standard Maven output path (confirmed: pom.xml's <version>2.10.0-SNAPSHOT</version>,
-# otp-shaded's own pom.xml has no custom <finalName>/<classifier> override):
-java -jar otp-shaded/target/otp-shaded-2.10.0-SNAPSHOT.jar --build --save /path/to/your/clipped-aarhus-inputs/
-```
-
-Confirm the real jar actually exists at that path after the Maven build
-(`ls otp-shaded/target/*.jar`) before relying on the exact filename above
-— it's expected to match, but verify rather than assume, the same way
-this plan's own earlier tasks verified rather than assumed Gradle task
-names. `--build --save <dir>` (real OTP CLI flags, confirmed present in
-`application/src/main/java/org/opentripplanner/standalone/config/CommandLineParameters.java`)
-reads whatever GTFS zip(s) + `.osm.pbf` file(s) are in `<dir>` and writes
-a serialized graph file into that same directory.
-
-- [ ] **Step 3: Document the exact command in `docs/graph-build.md`**
-
-Write the real bounding box, the real clipping scripts/commands you used
-(including their real output file sizes), the real Maven build command,
-and the real `--build --save` invocation that worked — this becomes the
-reference for building the eventual production Denmark-wide graph too
-(same command, unclipped full-Denmark input data instead).
-
-- [ ] **Step 4: Copy the resulting graph file into the test resources**
+- [ ] **Step 6: Copy the resulting graph file into the test resources**
 
 ```bash
-cp /path/to/aarhus-fixture-inputs/graph.obj otp-routing/src/test/resources/tiny-fixture-graph.obj
+cp /path/to/your/output/graph.obj otp-routing/src/test/resources/tiny-fixture-graph.obj
 ```
 
-- [ ] **Step 5: Remove `@Disabled` from `SerializedGraphObjectRoundTripTest`**
+- [ ] **Step 7: Remove `@Disabled` from `SerializedGraphObjectRoundTripTest`**
 
 Delete the `@Disabled("enabled by Task 4 once tiny-fixture-graph.obj exists")`
 line and its import if now unused.
 
-- [ ] **Step 6: Run test to verify it passes**
+- [ ] **Step 8: Run test to verify it passes**
 
 Run: `./gradlew :otp-routing:test --tests "*.SerializedGraphObjectRoundTripTest"`
 Expected: PASS — `loaded.graph` is non-null and real.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Document in `docs/graph-build.md`**
+
+Write what the throwaway builder actually needed (the real vendored file
+list, the real dependencies, the real driver code's shape, the real bbox
+and clipping approach) — this becomes the reference for the eventual
+production Denmark-wide graph-building flow (explicitly deferred, not
+this task's own job — a full production pipeline needs real config
+handling, error reporting, and probably belongs back in the real
+`application` module's own build once this project is far enough along to
+justify paying that dependency cost once, in CI/deployment rather than
+per-developer-machine).
+
+- [ ] **Step 10: Commit (the fixture and docs only — never the throwaway builder itself)**
 
 ```bash
 git add otp-routing/src/test/resources/tiny-fixture-graph.obj otp-routing/src/test/java/org/opentripplanner/routing/graph/SerializedGraphObjectRoundTripTest.java docs/graph-build.md
