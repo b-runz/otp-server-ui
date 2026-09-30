@@ -1379,14 +1379,14 @@ git commit -m "Port the Itinerary/Leg response model with badges"
 **Files:**
 - Create: `backend/src/main/kotlin/one/otpserverui/api/SearchRoute.kt`
 - Create: `backend/src/main/kotlin/one/otpserverui/api/SearchDto.kt`
-- Modify: `backend/src/main/kotlin/one/otpserverui/Main.kt` (wire the route
-  + load the graph once at startup)
 - Test: `backend/src/test/kotlin/one/otpserverui/api/SearchRouteTest.kt`
 
 **Interfaces:**
 - Consumes: `bringBike` (Task 9), `ParkAndRideFinder.search` (Task 7),
   `HubRouting` (Task 10), `toAppItinerary` (Task 12).
-- Produces: `POST /search` — real, complete JSON contract, tested below.
+- Produces: `fun Routing.searchRoute(engine: RoutingEngine, hubs: List<Hub>)`
+  — registers `POST /search`; wired into the real, complete production
+  application only in Task 16 (see that task for why), not here.
 
 - [ ] **Step 1: Write the DTOs**
 
@@ -1439,6 +1439,13 @@ data class SearchErrorResponse(val error: String)
 
 - [ ] **Step 2: Write the failing test**
 
+This task's test does not depend on `Main.kt`'s shared `module()` function
+(that function's final, complete shape isn't settled until Task 16 —
+having this task's test import it now would create exactly the kind of
+cross-task signature drift a pre-flight review would flag). Instead, build
+a minimal, self-contained Ktor application directly in the test, wiring
+only `searchRoute` — the one route this task owns:
+
 ```kotlin
 package one.otpserverui.api
 
@@ -1449,17 +1456,33 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.install
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
+import kotlin.io.path.toPath
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
-import one.otpserverui.module
+import one.otpserverui.GraphLoader
+import one.otpserverui.routing.HubCatalog
+import one.otpserverui.routing.RoutingEngine
 import org.junit.jupiter.api.Test
+
+private fun testEngine(): RoutingEngine {
+    val fixturePath = checkNotNull(object {}.javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
+    val loaded = GraphLoader.load(fixturePath)
+    return RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
+}
 
 class SearchRouteTest {
     @Test
     fun `POST search bring_bike returns a real itinerary`() = runTest {
         testApplication {
-            application { module() }
+            application {
+                install(ContentNegotiation) { json() }
+                routing { searchRoute(testEngine(), HubCatalog.load()) }
+            }
             val response = client.post("/search") {
                 contentType(ContentType.Application.Json)
                 setBody(
@@ -1480,7 +1503,10 @@ class SearchRouteTest {
     @Test
     fun `POST search with an out-of-coverage destination returns the typed no_coverage error`() = runTest {
         testApplication {
-            application { module() }
+            application {
+                install(ContentNegotiation) { json() }
+                routing { searchRoute(testEngine(), HubCatalog.load()) }
+            }
             val response = client.post("/search") {
                 contentType(ContentType.Application.Json)
                 setBody(
@@ -1501,7 +1527,10 @@ class SearchRouteTest {
     @Test
     fun `POST search with an unknown mode returns a typed 400 error`() = runTest {
         testApplication {
-            application { module() }
+            application {
+                install(ContentNegotiation) { json() }
+                routing { searchRoute(testEngine(), HubCatalog.load()) }
+            }
             val response = client.post("/search") {
                 contentType(ContentType.Application.Json)
                 setBody(
@@ -1522,7 +1551,10 @@ class SearchRouteTest {
     @Test
     fun `POST search with an unparseable datetime returns a typed 400 error`() = runTest {
         testApplication {
-            application { module() }
+            application {
+                install(ContentNegotiation) { json() }
+                routing { searchRoute(testEngine(), HubCatalog.load()) }
+            }
             val response = client.post("/search") {
                 contentType(ContentType.Application.Json)
                 setBody(
@@ -1677,11 +1709,13 @@ accessor for "arrival/departure time as an `Instant`" (`endTimeAsInstant`/
 `org.opentripplanner.model.plan.Itinerary` class from `otp-routing`,
 vendored in Task 2, to get the exact real method name).
 
-Update `Main.kt`'s `module()` to load the real fixture graph, build one
-`RoutingEngine`, load `HubCatalog`, install `ContentNegotiation` with
-`kotlinx.serialization.json`, and register `routing { searchRoute(engine, hubs) }`.
-For this task, load the same `tiny-fixture-graph.obj` used in tests
-(production graph-path configuration is Task 16's job).
+This task does not modify `Main.kt`'s production `module()`/`main()` at
+all — Task 16 is where `searchRoute`/`dropMeOffRoutes`/`geocodeRoute` all
+get registered together into the one real, complete production
+application. Keeping that assembly in a single later task avoids each of
+Tasks 13-15 repeatedly touching the same shared function and drifting out
+of sync with each other, the way an earlier draft of this plan did before
+its own pre-flight review caught it.
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -1691,7 +1725,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/src/main/kotlin/one/otpserverui/api/ backend/src/main/kotlin/one/otpserverui/Main.kt backend/src/test/kotlin/one/otpserverui/api/
+git add backend/src/main/kotlin/one/otpserverui/api/ backend/src/test/kotlin/one/otpserverui/api/
 git commit -m "Add POST /search with mode dispatch and typed error responses"
 ```
 
@@ -1701,20 +1735,21 @@ git commit -m "Add POST /search with mode dispatch and typed error responses"
 
 **Files:**
 - Create: `backend/src/main/kotlin/one/otpserverui/api/DropMeOffRoute.kt`
-- Modify: `backend/src/main/kotlin/one/otpserverui/Main.kt` (register the
-  two new routes)
 - Test: `backend/src/test/kotlin/one/otpserverui/api/DropMeOffRouteTest.kt`
 
 **Interfaces:**
 - Consumes: `nearbyRoutes`, `connectByFlaggingABus` (Task 11).
-- Produces: `GET /nearby-routes?lat=...&lon=...&radiusMeters=...` returning
+- Produces: `fun Routing.dropMeOffRoutes(engine: RoutingEngine)` —
+  registers `GET /nearby-routes?lat=...&lon=...&radiusMeters=...` returning
   `{"routes": [{"routeGtfsId": "...", "routeShortName": "...", "distanceMeters": ...}]}`,
   and `POST /connect` (body: flag point lat/lon, destination lat/lon,
   departure datetime) returning a single `ItineraryDto` or a typed
   `unreachable` error — Drop-me-off is a genuinely two-step flow (browse
   nearby routes, then connect to the chosen one), unlike Park & Ride/Bring
   Bike's single-call `/search`, so it gets its own two endpoints rather
-  than being folded into `SearchRequest`'s `mode` field.
+  than being folded into `SearchRequest`'s `mode` field. Wired into the
+  real, complete production application only in Task 16, same reasoning as
+  Task 13's own `searchRoute` — not here.
 
 - [ ] **Step 1: Write the DTOs**
 
@@ -1741,6 +1776,10 @@ data class ConnectRequest(
 
 - [ ] **Step 2: Write the failing test**
 
+Same as Task 13's own test: this task's test does not depend on the
+shared, not-yet-final `module()` — it builds a minimal application wiring
+only `dropMeOffRoutes`:
+
 ```kotlin
 package one.otpserverui.api
 
@@ -1752,16 +1791,32 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.install
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
+import kotlin.io.path.toPath
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import one.otpserverui.GraphLoader
+import one.otpserverui.routing.RoutingEngine
 import org.junit.jupiter.api.Test
+
+private fun testEngine(): RoutingEngine {
+    val fixturePath = checkNotNull(object {}.javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
+    val loaded = GraphLoader.load(fixturePath)
+    return RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
+}
 
 class DropMeOffRouteTest {
     @Test
     fun `GET nearby-routes returns real routes near a known Aarhus stop`() = runTest {
         testApplication {
-            application { module() }
+            application {
+                install(ContentNegotiation) { json() }
+                routing { dropMeOffRoutes(testEngine()) }
+            }
             val response = client.get("/nearby-routes?lat=56.171798&lon=10.172087&radiusMeters=500")
             assertThat(response.status).isEqualTo(HttpStatusCode.OK)
             val body = Json.decodeFromString<NearbyRoutesResponse>(response.bodyAsText())
@@ -1772,7 +1827,10 @@ class DropMeOffRouteTest {
     @Test
     fun `POST connect returns a real itinerary to the flag point`() = runTest {
         testApplication {
-            application { module() }
+            application {
+                install(ContentNegotiation) { json() }
+                routing { dropMeOffRoutes(testEngine()) }
+            }
             val response = client.post("/connect") {
                 contentType(ContentType.Application.Json)
                 setBody(
@@ -1796,7 +1854,7 @@ class DropMeOffRouteTest {
 Run: `./gradlew :backend:test --tests "*.DropMeOffRouteTest"`
 Expected: FAIL — neither route exists yet.
 
-- [ ] **Step 4: Write `DropMeOffRoute.kt` and register it in `Main.kt`**
+- [ ] **Step 4: Write `DropMeOffRoute.kt`**
 
 ```kotlin
 package one.otpserverui.api
@@ -1849,8 +1907,9 @@ fun Routing.dropMeOffRoutes(engine: RoutingEngine) {
 Confirm `NearbyRoute`'s real field names (`routeGtfsId`/`routeShortName`/
 `distanceMeters` assumed above) against `NearbyRoutesFinder.kt`'s real,
 just-copied (Task 11) `NearbyRoute` data class before treating this as
-final. Register `routing { dropMeOffRoutes(engine) }` alongside Task 13's
-`searchRoute(engine, hubs)` in `Main.kt`'s `module()`.
+final. This task does not modify `Main.kt` — Task 16 registers
+`dropMeOffRoutes` alongside `searchRoute`/`geocodeRoute` in the one real
+production application (see Task 13's own note for why).
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -1860,7 +1919,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/src/main/kotlin/one/otpserverui/api/DropMeOffRoute.kt backend/src/main/kotlin/one/otpserverui/Main.kt backend/src/test/kotlin/one/otpserverui/api/DropMeOffRouteTest.kt
+git add backend/src/main/kotlin/one/otpserverui/api/DropMeOffRoute.kt backend/src/test/kotlin/one/otpserverui/api/DropMeOffRouteTest.kt
 git commit -m "Add Drop-me-off HTTP endpoints (nearby routes + connect)"
 ```
 
@@ -1870,17 +1929,21 @@ git commit -m "Add Drop-me-off HTTP endpoints (nearby routes + connect)"
 
 **Files:**
 - Create: `backend/src/main/kotlin/one/otpserverui/api/GeocodeRoute.kt`
-- Modify: `backend/src/main/kotlin/one/otpserverui/Main.kt` (register the
-  route)
 - Test: `backend/src/test/kotlin/one/otpserverui/api/GeocodeRouteTest.kt`
 
 **Interfaces:**
-- Produces: `GET /geocode?q=...` returning `{"candidates": [{"label": "...", "lat": ..., "lon": ...}]}`.
+- Produces: `fun Routing.geocodeRoute(client: GeocodeClient)` — registers
+  `GET /geocode?q=...` returning
+  `{"candidates": [{"label": "...", "lat": ..., "lon": ...}]}`. Wired into
+  the real, complete production application only in Task 16, same
+  reasoning as Task 13's own `searchRoute` — not here.
 
 - [ ] **Step 1: Write the failing test**
 
 Use a fake/mocked Places client (an injected `GeocodeClient` interface),
-not a real network call, so this test is fast and deterministic:
+not a real network call, so this test is fast and deterministic — same
+self-contained-application pattern as Tasks 13/14's own tests, wiring only
+`geocodeRoute`:
 
 ```kotlin
 package one.otpserverui.api
@@ -1889,10 +1952,13 @@ import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.install
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
-import one.otpserverui.moduleWithGeocodeClient
 import org.junit.jupiter.api.Test
 
 class GeocodeRouteTest {
@@ -1900,7 +1966,8 @@ class GeocodeRouteTest {
     fun `GET geocode returns real candidates from the injected client`() = runTest {
         testApplication {
             application {
-                moduleWithGeocodeClient(FakeGeocodeClient(listOf(GeocodeCandidate("Langelandsgade, Aarhus, Danmark", 56.1638, 10.1979))))
+                install(ContentNegotiation) { json() }
+                routing { geocodeRoute(FakeGeocodeClient(listOf(GeocodeCandidate("Langelandsgade, Aarhus, Danmark", 56.1638, 10.1979)))) }
             }
             val response = client.get("/geocode?q=Langelandsg")
             assertThat(response.status).isEqualTo(HttpStatusCode.OK)
@@ -1913,7 +1980,10 @@ class GeocodeRouteTest {
     @Test
     fun `GET geocode with no results returns an empty candidates array`() = runTest {
         testApplication {
-            application { moduleWithGeocodeClient(FakeGeocodeClient(emptyList())) }
+            application {
+                install(ContentNegotiation) { json() }
+                routing { geocodeRoute(FakeGeocodeClient(emptyList())) }
+            }
             val response = client.get("/geocode?q=zzzznonsense")
             val body = Json.decodeFromString<GeocodeResponse>(response.bodyAsText())
             assertThat(body.candidates).isEmpty()
@@ -2032,23 +2102,38 @@ Expected: PASS (the fake client, not the real Google one, is exercised).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/src/main/kotlin/one/otpserverui/api/GeocodeRoute.kt backend/src/main/kotlin/one/otpserverui/Main.kt backend/src/test/kotlin/one/otpserverui/api/GeocodeRouteTest.kt
+git add backend/src/main/kotlin/one/otpserverui/api/GeocodeRoute.kt backend/src/test/kotlin/one/otpserverui/api/GeocodeRouteTest.kt
 git commit -m "Add GET /geocode Google Places proxy (fake-client-tested)"
 ```
 
 ---
 
-### Task 16: Configurable graph path + startup failure handling
+### Task 16: Assemble the real production application
 
 **Files:**
 - Modify: `backend/src/main/kotlin/one/otpserverui/Main.kt`
 - Test: `backend/src/test/kotlin/one/otpserverui/MainStartupTest.kt`
 
 **Interfaces:**
-- Produces: `Main.kt` reads the real graph file path from an environment
-  variable `GRAPH_FILE_PATH` (falling back to the test fixture only in
-  test code, never in `main()` itself), and a missing/corrupt file fails
-  startup loudly instead of serving a null graph.
+- Consumes: `searchRoute` (Task 13), `dropMeOffRoutes` (Task 14),
+  `geocodeRoute`/`GooglePlacesGeocodeClient` (Task 15), `HubCatalog.load`
+  (Task 10), `GraphLoader.load` (Task 5).
+- Produces: `fun Application.module(engine: RoutingEngine, hubs: List<Hub>, geocodeClient: GeocodeClient)`
+  — the one real, complete production application, registering `/health`
+  (Task 1) and all three tasks' routes together for the first time; every
+  later task (17) and real deployment uses exactly this function, not a
+  narrower per-task variant. Also: `Main.kt` reads the real graph file path
+  from an environment variable `GRAPH_FILE_PATH` (never hardcoded in
+  `main()` itself), and a missing/corrupt file fails startup loudly instead
+  of serving a null graph.
+
+Tasks 13-15 deliberately tested their own one route in isolation (a
+self-contained `application { routing { theOneRoute(...) } }` block each,
+not a shared, still-evolving `module()`) — precisely so this task could be
+the single place all three come together, without three earlier tasks each
+touching the same function and drifting out of sync with each other (a
+real gap this plan's own pre-flight review caught and fixed before Task 1
+was ever dispatched).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2075,26 +2160,64 @@ class MainStartupTest {
 Run: `./gradlew :backend:test --tests "*.MainStartupTest"`
 Expected: FAIL — `loadGraphOrFail` doesn't exist yet.
 
-- [ ] **Step 3: Write `loadGraphOrFail` and wire it into `main()`**
+- [ ] **Step 3: Rewrite `Main.kt` as the real, complete assembly**
 
 ```kotlin
-fun loadGraphOrFail(path: java.nio.file.Path): LoadedGraph {
-    check(java.nio.file.Files.exists(path)) { "Graph file not found: $path" }
+package one.otpserverui
+
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.Application
+import io.ktor.server.application.install
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
+import io.ktor.server.routing.routing
+import java.nio.file.Files
+import java.nio.file.Path
+import one.otpserverui.api.GeocodeClient
+import one.otpserverui.api.GooglePlacesGeocodeClient
+import one.otpserverui.api.dropMeOffRoutes
+import one.otpserverui.api.geocodeRoute
+import one.otpserverui.api.searchRoute
+import one.otpserverui.routing.Hub
+import one.otpserverui.routing.HubCatalog
+import one.otpserverui.routing.RoutingEngine
+
+fun loadGraphOrFail(path: Path): LoadedGraph {
+    check(Files.exists(path)) { "Graph file not found: $path" }
     return GraphLoader.load(path)
 }
 
 fun main() {
-    val graphPath = java.nio.file.Path.of(System.getenv("GRAPH_FILE_PATH") ?: error("GRAPH_FILE_PATH environment variable is required"))
+    val graphPath = Path.of(System.getenv("GRAPH_FILE_PATH") ?: error("GRAPH_FILE_PATH environment variable is required"))
     val loaded = loadGraphOrFail(graphPath)
-    val engine = one.otpserverui.routing.RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
-    embeddedServer(Netty, port = 8080, module = { module(engine) }).start(wait = true)
+    val engine = RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
+    val hubs = HubCatalog.load()
+    val apiKey = System.getenv("GOOGLE_PLACES_API_KEY") ?: error("GOOGLE_PLACES_API_KEY environment variable is required")
+    val geocodeClient = GooglePlacesGeocodeClient(io.ktor.client.HttpClient(), apiKey)
+
+    embeddedServer(Netty, port = 8080, module = { module(engine, hubs, geocodeClient) }).start(wait = true)
+}
+
+fun Application.module(engine: RoutingEngine, hubs: List<Hub>, geocodeClient: GeocodeClient) {
+    install(ContentNegotiation) { json() }
+    routing {
+        get("/health") { call.respondText("ok") }
+        searchRoute(engine, hubs)
+        dropMeOffRoutes(engine)
+        geocodeRoute(geocodeClient)
+    }
 }
 ```
 
-Adjust `module()`'s signature to take the already-constructed `engine`
-(rather than building one internally), and update Task 13/14's own tests'
-`application { module() }` calls to pass a test-fixture-built `engine`
-explicitly, matching this new signature.
+This replaces Task 1's original `fun Application.module()` (no args)
+entirely — update Task 1's own `HealthCheckTest` to call
+`module(testEngine(), emptyList(), FakeGeocodeClient(emptyList()))`
+instead (reusing Task 13's `testEngine()` helper pattern and Task 15's
+`FakeGeocodeClient`), so the whole test suite keeps calling one real
+function shape, not two.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -2109,8 +2232,8 @@ Expected: BUILD SUCCESSFUL, zero failures, across every module.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/src/main/kotlin/one/otpserverui/Main.kt backend/src/test/kotlin/one/otpserverui/MainStartupTest.kt
-git commit -m "Make the graph file path configurable, fail startup loudly on a bad path"
+git add backend/src/main/kotlin/one/otpserverui/Main.kt backend/src/test/kotlin/one/otpserverui/MainStartupTest.kt backend/src/test/kotlin/one/otpserverui/HealthCheckTest.kt
+git commit -m "Assemble the real production application (all routes, configurable graph path)"
 ```
 
 ---
@@ -2123,6 +2246,11 @@ git commit -m "Make the graph file path configurable, fail startup loudly on a b
 - Test: `backend/src/test/kotlin/one/otpserverui/BackendSmokeTest.kt`
 
 - [ ] **Step 1: Write one end-to-end test per mode**
+
+This test uses the real, complete `module(engine, hubs, geocodeClient)`
+from Task 16 — the same function `main()` calls — with a real engine/hubs
+and a no-op fake geocode client (this test doesn't exercise `/geocode`, so
+a real Google API key isn't needed here):
 
 ```kotlin
 package one.otpserverui
@@ -2138,9 +2266,18 @@ import io.ktor.server.testing.testApplication
 import kotlin.io.path.toPath
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import one.otpserverui.api.GeocodeCandidate
+import one.otpserverui.api.GeocodeClient
+import one.otpserverui.api.NearbyRoutesResponse
 import one.otpserverui.api.SearchResponse
+import one.otpserverui.routing.Hub
+import one.otpserverui.routing.HubCatalog
 import one.otpserverui.routing.RoutingEngine
 import org.junit.jupiter.api.Test
+
+private class NoOpGeocodeClient : GeocodeClient {
+    override suspend fun search(query: String): List<GeocodeCandidate> = emptyList()
+}
 
 class BackendSmokeTest {
     private fun realEngine(): RoutingEngine {
@@ -2149,10 +2286,12 @@ class BackendSmokeTest {
         return RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
     }
 
+    private fun realHubs(): List<Hub> = HubCatalog.load()
+
     @Test
     fun `bring_bike search returns a real result over HTTP`() = runTest {
         testApplication {
-            application { module(realEngine()) }
+            application { module(realEngine(), realHubs(), NoOpGeocodeClient()) }
             val response = client.post("/search") {
                 contentType(ContentType.Application.Json)
                 setBody(
@@ -2167,7 +2306,7 @@ class BackendSmokeTest {
     @Test
     fun `park_and_ride search returns a real result over HTTP`() = runTest {
         testApplication {
-            application { module(realEngine()) }
+            application { module(realEngine(), realHubs(), NoOpGeocodeClient()) }
             val response = client.post("/search") {
                 contentType(ContentType.Application.Json)
                 setBody(
@@ -2182,9 +2321,9 @@ class BackendSmokeTest {
     @Test
     fun `drop_me_off nearby-routes returns real routes over HTTP`() = runTest {
         testApplication {
-            application { module(realEngine()) }
+            application { module(realEngine(), realHubs(), NoOpGeocodeClient()) }
             val response = client.get("/nearby-routes?lat=56.171798&lon=10.172087&radiusMeters=500")
-            val body = Json.decodeFromString<one.otpserverui.api.NearbyRoutesResponse>(response.bodyAsText())
+            val body = Json.decodeFromString<NearbyRoutesResponse>(response.bodyAsText())
             assertThat(body.routes).isNotEmpty()
         }
     }
