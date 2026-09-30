@@ -21,6 +21,9 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.19")
     implementation("com.google.code.findbugs:jsr305:3.0.2")
     implementation("com.fasterxml.jackson.core:jackson-annotations:2.22")
+    implementation("com.esotericsoftware:kryo:5.6.2")
+    implementation("com.conveyal:kryo-tools:1.5.0")
+    implementation("de.javakaffee:kryo-serializers:0.45")
 
     testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")

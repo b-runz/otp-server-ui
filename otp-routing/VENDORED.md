@@ -1050,3 +1050,54 @@ transit/repository/TimetableRepository.java
 transit/repository/TimetableRepositoryLifecycle.java
 transit/service/PatternByServiceDatesFilter.java
 ```
+
+## otp-server-ui addition: graph loading
+
+`routing/graph/SerializedGraphObject.java` and `routing/graph/kryosupport/*` were added on top of
+the original vendoring above, copied verbatim from the same upstream commit (`61a3af6798`) this
+module's other files were cut from.
+`WorldEnvelopeRepository`/`VehicleParkingRepository`/`OsmInfoGraphBuildRepository`/`StopConsolidationRepository`/`EmissionRepository`/`EmpiricalDelayRepository`/`FareServiceFactory`
+are newly-written stubs, not copies — see this repo's own
+`docs/superpowers/specs/2026-09-30-otp-server-ui-design.md` for why. All seven are empty marker
+interfaces: `SerializedGraphObject` only ever holds them as constructor-injected fields and never
+calls a method on them, so no behaviour needed to be stubbed in.
+
+Compiling `SerializedGraphObject.java` surfaced several more unresolved dependencies beyond that
+enumerated list, handled as follows:
+
+- **`org/opentripplanner/graph_builder/issue/api/DataImportIssueSummary.java`** — copied verbatim,
+  per plan, as a small data-holder class outside the excluded `graph_builder.*` ingestion
+  proper. Its own small dependency closure (`DataImportIssueStore.java`, `DataImportIssue.java`,
+  `NoopDataImportIssueStore.java`, all in the same `issue/api` package, ~155 lines combined) was
+  copied verbatim too, since `DataImportIssueSummary`'s constructor and static import reference
+  them directly and they in turn need nothing outside this package plus JTS's `Geometry`
+  (already a dependency) and the already-vendored `framework/error/OtpError.java`.
+- **`org/opentripplanner/datastore/api/DataSource.java`** — not named in the task brief; surfaced
+  as an additional unresolved import. Real upstream `DataSource` is a generalized file/zip/cloud
+  storage abstraction backing the graph-building/data-import pipeline, out of scope for this
+  project the same way `graph_builder.*` is. Written as a new stub interface (not a copy)
+  declaring only the methods `SerializedGraphObject` itself calls on it
+  (`name()`/`path()`/`exists()`/`isWritable()`/`size()`/`asInputStream()`/`asOutputStream()`), with
+  no bodies — nothing in this module ever constructs a `DataSource`, since graph loading here
+  always goes through `SerializedGraphObject.load(File)`, not `load(DataSource)`.
+- **`org/opentripplanner/kryo/UnmodifiableCollectionsSerializer.java`** — copied verbatim (needed
+  by `KryoBuilder.java`; self-contained, only `java.util.*` and Kryo imports).
+- **`org/opentripplanner/kryo/BuildConfigSerializer.java`** and
+  **`org/opentripplanner/kryo/RouterConfigSerializer.java`** — newly-written stubs, not copies.
+  The real upstream versions round-trip `BuildConfig`/`RouterConfig`'s underlying JSON config tree
+  through `standalone.config.framework.file.ConfigFileLoader`, which doesn't exist here (the real
+  config-parsing framework is out of scope — see the pre-existing `standalone.config` stubs from
+  Task 2). Since this module's `BuildConfig`/`RouterConfig` are themselves empty no-arg-constructor
+  stubs with no state, these serializers write nothing and reconstruct a fresh instance on read.
+
+Two extra Gradle dependencies were needed beyond the brief's `com.esotericsoftware:kryo:5.6.2`,
+because `KryoBuilder.java` (one of the 7 verbatim `kryosupport` files) also imports
+`com.conveyal.kryo.*` and `de.javakaffee.kryoserializers.guava.*`:
+`com.conveyal:kryo-tools` and `de.javakaffee:kryo-serializers:0.45`. Upstream's own `pom.xml` pins
+`kryo-tools` to `1.6.0`, but that version's jar is compiled to class-file version 64 (Java 20),
+which fails `otp-routing`'s `--release 17` compile ("bad class file ... should be 61.0"). Pinned to
+`kryo-tools:1.5.0` instead (class-file version compatible with Java 17) — the only files this
+module uses from it (`TIntArrayListSerializer`, `TIntIntHashMapSerializer`) are unchanged between
+those releases. `org.objenesis.strategy.SerializingInstantiatorStrategy` (also used by
+`KryoBuilder.java`) needed no separate dependency entry — it resolves transitively through Kryo's
+own dependency on `org.objenesis:objenesis`.

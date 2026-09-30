@@ -158,3 +158,48 @@ followed; grouped above by package, called out here for visibility: `standalone.
 compiler-surfaced unresolved symbols. Once `DirectFlexRouter`/`FlexAccessEgressRouter` were
 rewritten as stubs that never call `FlexRouter`/`FilterMapper`, those two types were no longer
 referenced anywhere in the module, so no stub was needed for them.)
+
+## otp-server-ui addition: graph loading (see `VENDORED.md`'s matching section)
+
+Added on top of the above when `routing/graph/SerializedGraphObject.java` was vendored in. All
+seven are empty marker interfaces: `SerializedGraphObject` only holds each as a
+constructor-injected field and never calls a method on it, so nothing beyond the type itself
+needed to exist.
+
+- **`org/opentripplanner/service/worldenvelope/WorldEnvelopeRepository.java`** — `extends
+  Serializable`, matching upstream. Referenced by `routing/graph/SerializedGraphObject.java`.
+- **`org/opentripplanner/service/vehicleparking/VehicleParkingRepository.java`** — plain
+  interface (upstream does not extend `Serializable`). Referenced by
+  `routing/graph/SerializedGraphObject.java`.
+- **`org/opentripplanner/service/osminfo/OsmInfoGraphBuildRepository.java`** — `extends
+  Serializable`, matching upstream. Referenced (as a `@Nullable` field) by
+  `routing/graph/SerializedGraphObject.java`.
+- **`org/opentripplanner/ext/stopconsolidation/StopConsolidationRepository.java`** — `extends
+  Serializable`, matching upstream. Referenced by `routing/graph/SerializedGraphObject.java`.
+- **`org/opentripplanner/ext/emission/EmissionRepository.java`** — `extends Serializable`,
+  matching upstream. Referenced (as a `@Nullable` field) by
+  `routing/graph/SerializedGraphObject.java`.
+- **`org/opentripplanner/ext/empiricaldelay/EmpiricalDelayRepository.java`** — `extends
+  Serializable`, matching upstream. Referenced (as a `@Nullable` field) by
+  `routing/graph/SerializedGraphObject.java`.
+- **`org/opentripplanner/routing/fares/FareServiceFactory.java`** — plain interface (upstream does
+  not extend `Serializable`). Referenced by `routing/graph/SerializedGraphObject.java`.
+
+Two more stubs, not enumerated in the task brief, were needed to compile `SerializedGraphObject`'s
+own dependency closure:
+
+- **`org/opentripplanner/datastore/api/DataSource.java`** — interface with only the methods
+  `SerializedGraphObject` itself calls: `name()`, `path()`, `exists()`, `isWritable()`, `size()`,
+  `asInputStream()`, `asOutputStream()`, all with no bodies (an interface, so none are needed).
+  Real upstream is a much larger file/zip/cloud-storage abstraction backing the excluded
+  graph-building/data-import pipeline; nothing in this module ever constructs a `DataSource`
+  (graph loading here always goes through `SerializedGraphObject.load(File)`, not
+  `load(DataSource)`). Referenced by `routing/graph/SerializedGraphObject.java`.
+- **`org/opentripplanner/kryo/BuildConfigSerializer.java`** /
+  **`org/opentripplanner/kryo/RouterConfigSerializer.java`** — Kryo `Serializer<BuildConfig>` /
+  `Serializer<RouterConfig>` implementations; `write()` is a no-op and `read()` returns
+  `new BuildConfig()` / `new RouterConfig()`. Real upstream round-trips the JSON config tree
+  through `standalone.config.framework.file.ConfigFileLoader` (out of scope); since this module's
+  `BuildConfig`/`RouterConfig` stubs (see above) are empty no-arg-constructor classes with no
+  state, there is nothing to actually serialize. Referenced by
+  `routing/graph/kryosupport/KryoBuilder.java`.
