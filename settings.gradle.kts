@@ -6,5 +6,12 @@ pluginManagement {
     }
 }
 
+dependencyResolutionManagement {
+    repositories {
+        maven("https://cache-redirector.jetbrains.com/maven-central")
+        mavenCentral()
+    }
+}
+
 rootProject.name = "otp-server-ui"
 include(":backend")
