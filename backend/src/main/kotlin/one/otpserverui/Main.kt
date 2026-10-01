@@ -54,7 +54,7 @@ fun Application.module(engine: RoutingEngine, hubs: List<TransitHub>, geocodeCli
     routing {
         get("/health") { call.respondText("ok") }
         searchRoute(engine, hubs)
-        dropMeOffRoutes(engine)
+        dropMeOffRoutes(engine, hubs)
         geocodeRoute(geocodeClient)
     }
 }

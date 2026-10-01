@@ -12,8 +12,8 @@ import kotlinx.serialization.Serializable
  * (`GraphQlRequest`, `PlanVariables`, `LegDto`, etc., also declared in that
  * same source file) are deliberately NOT ported here: this project has no
  * GraphQL dependency (see this task's brief), and `DropMeOff.kt`'s
- * `connectByFlaggingABus` calls `RoutingEngine.directRoute` directly instead
- * of bikebus's own `otpApi`/`OtpQueryBuilder` GraphQL round-trip.
+ * `confirmFlagStop`/`connectToRoute` call `RoutingEngine.directRoute` directly
+ * instead of bikebus's own `otpApi`/`OtpQueryBuilder` GraphQL round-trip.
  */
 @Serializable
 data class PatternDto(
