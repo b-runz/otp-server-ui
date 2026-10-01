@@ -2457,8 +2457,560 @@ git add backend/src/test/kotlin/one/otpserverui/BackendSmokeTest.kt
 git commit -m "Add a full backend smoke test across search modes"
 ```
 
-- [ ] **Step 4: No further action**
+---
+
+## Plan Amendment (2026-10-01): Tasks 18-19
+
+This plan's final whole-branch review (dispatched after Task 17, on the most
+capable available model) found that Task 11's Drop-me-off port was
+incomplete in a way that matters: bikebus's real "connect to a route" flow
+is a full, via-constrained origin→destination search (pick the cheapest
+itinerary that actually rides the chosen route, optionally hub-stitch,
+*then* find a flag point on the bus's own path) — not just a plain walk
+from a client-supplied point, which is all `connectByFlaggingABus` (Task
+11) and `POST /connect` (Task 14) currently do. The API as shipped through
+Task 17 cannot support the real flow at all: `ConnectRequest` carries no
+origin or route id, and `NearbyRouteDto` drops `stopIds`, so a client has
+no way to constrain a search to a chosen route in the first place.
+
+The user was presented this finding and chose to build the real feature
+now, plus a small fix wave for three other review findings, rather than
+rescoping the spec. Tasks 18-19 below implement that. Task 20 is the fix
+wave. The rest of the whole-branch review's findings (unbounded resource
+use, the vestigial transit-search lock, `/geocode`'s N+1 Details-fetching
+and missing rate limiting) are deliberately NOT addressed here — they are
+real, but scoped as pre-deployment hardening, out of scope for this plan's
+own "complete, independently-testable JSON API backend" boundary. They are
+recorded in this plan's ledger as accepted, carried-forward debt.
+
+### Task 18: Port the via-constrained Bring Bike search and the hub/flag-stop decision logic
+
+**Files:**
+- Modify: `backend/src/main/kotlin/one/otpserverui/routing/BringBike.kt`
+  (add `viaStopIds`/`numItineraries` support to the request this function
+  already builds — see Step 1)
+- Create: `backend/src/main/kotlin/one/otpserverui/domain/NearbyRoutesFinder.kt`
+  additions (this file already exists from Task 11 with only
+  `rankCandidates` ported; add the three members Task 11 deliberately
+  omitted — see Step 2)
+- Create: `backend/src/main/kotlin/one/otpserverui/model/FlagStopInfo.kt`
+  (new, adapted from `bikebus/app/src/main/java/one/brj/bikebus/model/FlagStopInfo.kt`
+  — plain data class, verbatim copy, package renamed)
+- Create: `backend/src/main/kotlin/one/otpserverui/model/FlagStopConnectResult.kt`
+  (new, adapted from `bikebus/app/src/main/java/one/brj/bikebus/model/FlagStopConnectResult.kt`
+  — plain data class referencing the app-level `Leg` (Task 12), package
+  renamed)
+- Test: `backend/src/test/kotlin/one/otpserverui/routing/BringBikeViaTest.kt`
+- Test: `backend/src/test/kotlin/one/otpserverui/domain/NearbyRoutesFinderTest.kt`
+
+**Interfaces:**
+- Consumes: `RoutingEngine`/`streetReach`/`transitSearch`/`toItineraries`/
+  `directRoute`/`filter` (Task 6), `HubRouting.trimHubConnector`/`choose`
+  (Task 10).
+- Produces: `fun bringBike(engine, origin, destination, timeMode, dateTime, viaStopIds: List<String> = emptyList(), numItineraries: Int? = null): List<Itinerary>`
+  (extends Task 9's existing signature, backward compatible — every
+  existing call site keeps compiling unchanged since both new parameters
+  default off), `object NearbyRoutesFinder { ... pickCheapestQualifying(...)
+  findSplitForRoute(...) buildFlagStopInfo(...) }`, `data class
+  RouteHubSplit(val hub: TransitHub, val routeOnOriginSide: Boolean)` — Task
+  19 consumes all of these.
+
+- [ ] **Step 1: Add via-location and numItineraries support to `bringBike`'s request**
+
+Read `bikebus/app/src/main/java/one/brj/bikebus/domain/EmbeddedRequestBuilder.kt`
+first — it's the real source `bringBike` (Task 9) was itself adapted from,
+and its KDoc documents exactly why/how `viaStopIds`/`numItineraries` are
+applied. The real recipe, confirmed against this project's own vendored
+`otp-routing` source before writing this task (`VisitViaLocation`,
+`FeedScopedId.parse`, `RouteRequestBuilder.withViaLocations`/
+`withNumItineraries` are all real, already-vendored APIs — no new
+dependency needed):
+
+```kotlin
+import org.opentripplanner.core.model.id.FeedScopedId
+import org.opentripplanner.routing.api.request.via.VisitViaLocation
+
+fun bringBike(
+    engine: RoutingEngine,
+    origin: WgsCoordinate,
+    destination: WgsCoordinate,
+    timeMode: TimeMode,
+    dateTime: Instant,
+    viaStopIds: List<String> = emptyList(),
+    numItineraries: Int? = null,
+): List<Itinerary> {
+    val requestBuilder = engine.requestBuilder()
+        .withFrom(GenericLocation.fromCoordinate(origin))
+        .withTo(GenericLocation.fromCoordinate(destination))
+        .withDateTime(dateTime)
+        .apply { if (timeMode == TimeMode.ARRIVE_BY) withArriveBy(true) }
+        .withJourney { it.withAllModes(StreetMode.BIKE) }
+        .withSearchWindow(Duration.ofHours(12))
+        .withPreferences { preferences -> preferences.withTransfer { transfer -> transfer.withCost(3600) } }
+    if (viaStopIds.isNotEmpty()) {
+        requestBuilder.withViaLocations(listOf(VisitViaLocation(null, null, FeedScopedId.parse(viaStopIds), null)))
+    }
+    if (numItineraries != null) {
+        requestBuilder.withNumItineraries(numItineraries)
+    }
+    val request = requestBuilder.buildRequest()
+
+    val accessEgressDuration = request.preferences().street().accessEgress().maxDuration().valueOf(StreetMode.BIKE)
+    val access = engine.streetReach(origin, StreetMode.BIKE, accessEgressDuration, ReachDirection.ACCESS, request)
+    val egress = engine.streetReach(destination, StreetMode.BIKE, accessEgressDuration, ReachDirection.EGRESS, request)
+
+    val transitItineraries: List<Itinerary> = if (access.isEmpty() || egress.isEmpty()) {
+        emptyList()
+    } else {
+        val paths = engine.transitSearch(access, egress, request)
+        engine.toItineraries(paths, request)
+    }
+
+    // A via-constrained search must never fall back to a direct (non-transit) route -- bikebus's
+    // own planEmbeddedItineraries does the same (directItineraries forced empty whenever
+    // viaStopIds is non-empty), since "ride via this stop" has no meaning for a direct route.
+    val directItineraries: List<Itinerary> = if (viaStopIds.isEmpty()) {
+        engine.directRoute(origin, destination, StreetMode.BIKE, request)
+    } else {
+        emptyList()
+    }
+
+    return engine.filter(directItineraries + transitItineraries, request)
+}
+```
+
+This is the existing `bringBike` body (already correct, per Task 9's own
+fix round) with four additions: the two new parameters, the
+`withViaLocations`/`withNumItineraries` conditional calls, and the
+`viaStopIds.isEmpty()` guard around `directItineraries` (previously
+unconditional). Every other line is unchanged. Confirm `FeedScopedId.parse`
+really takes a `Collection<String>` and returns `List<FeedScopedId>` (not,
+e.g., a single string) by reading the real vendored source yourself before
+treating this as final — this plan's own history has had real signature
+errors in nearly every task, verify rather than trust.
+
+- [ ] **Step 2: Port NearbyRoutesFinder's remaining three members, adapted**
+
+Read `bikebus/app/src/main/java/one/brj/bikebus/domain/NearbyRoutesFinder.kt`'s
+real source (Task 11's own ledger entry already quotes it in full) for
+`pickCheapestQualifying`/`findSplitForRoute`/`buildFlagStopInfo`/
+`RouteHubSplit` — Task 11 deliberately did not port these three because
+they depend on bikebus's own app-level `model.Leg` type
+(`routeGtfsId`/`durationSeconds`/`toLat`/`toLon`/`distanceMeters` fields),
+which this project doesn't have at the routing-engine layer (real OTP
+`Leg` is used there instead) — but this project's Task 12 model, Itinerary/
+Leg (app-level, `one.otpserverui.model.Itinerary`/`Leg`), already exists and
+has the same field shape bikebus's model does. Adapt these three functions
+to operate on **this project's own app-level `one.otpserverui.model.Leg`**
+(not real OTP's `Leg`) — unlike `HubRouting.kt` (Task 10), which had to
+adapt to real OTP types because it runs inside the routing-engine tier
+before any app-level conversion happens, `pickCheapestQualifying`/
+`findSplitForRoute`/`buildFlagStopInfo` in bikebus already operate on
+post-`toAppItinerary()` data (see `connectViaRoute`'s real call site:
+`planEmbedded(...).map { it.legs }` where `legs: List<Leg>` is the
+app-level type) — so the adaptation here is purely a package rename plus
+possibly nullable-field differences (check `one.otpserverui.model.Leg`'s
+real fields against bikebus's `model.Leg`'s fields, particularly
+`routeGtfsId`'s nullability, before treating field names as identical).
+
+Add to the existing `backend/src/main/kotlin/one/otpserverui/domain/NearbyRoutesFinder.kt`
+(from Task 11, currently only `rankCandidates`):
+
+```kotlin
+data class RouteHubSplit(val hub: TransitHub, val routeOnOriginSide: Boolean)
+
+// (inside the existing NearbyRoutesFinder object)
+
+private const val NEAR_STOP_RADIUS_METERS = 1_000.0
+
+fun pickCheapestQualifying(itineraries: List<List<Leg>>, targetRouteGtfsId: String): List<Leg>? =
+    itineraries
+        .filter { legs -> legs.any { it.routeGtfsId == targetRouteGtfsId } }
+        .minByOrNull { legs -> legs.sumOf { it.durationSeconds } }
+
+fun findSplitForRoute(legs: List<Leg>, hubs: List<TransitHub>, targetRouteGtfsId: String): RouteHubSplit? {
+    val routeLegIndex = legs.indexOfFirst { it.routeGtfsId == targetRouteGtfsId }
+    if (routeLegIndex == -1) return null
+    for (i in 0 until legs.size - 1) {
+        val alight = legs[i]
+        val board = legs[i + 1]
+        if (!isTransit(alight.mode) || !isTransit(board.mode)) continue
+        val nearest = hubs.minByOrNull { haversineMeters(it.lat, it.lon, alight.toLat, alight.toLon) } ?: continue
+        if (haversineMeters(nearest.lat, nearest.lon, alight.toLat, alight.toLon) <= NEAR_STOP_RADIUS_METERS) {
+            return RouteHubSplit(hub = nearest, routeOnOriginSide = routeLegIndex <= i)
+        }
+    }
+    return null
+}
+
+fun buildFlagStopInfo(flagLat: Double, flagLon: Double, officialLeg: Leg, directLeg: Leg): FlagStopInfo =
+    FlagStopInfo(
+        flagLat = flagLat, flagLon = flagLon,
+        officialFinalLegDistanceMeters = officialLeg.distanceMeters,
+        officialFinalLegDurationSeconds = officialLeg.durationSeconds,
+        flagStopDistanceMeters = directLeg.distanceMeters,
+        flagStopDurationSeconds = directLeg.durationSeconds
+    )
+
+private fun isTransit(mode: String) = mode != "BICYCLE" && mode != "WALK"
+```
+
+`haversineMeters` already exists in this file's package (`domain/Geo.kt`,
+ported in Task 11) — reuse it, don't redefine it. `TransitHub` (Task 10)
+and `FlagStopInfo`/`Leg` (this task's Step 3 / Task 12) must resolve by
+import.
+
+- [ ] **Step 3: Port the two model files verbatim**
+
+```bash
+cp /c/Users/bru/spare-source/bikebus/app/src/main/java/one/brj/bikebus/model/FlagStopInfo.kt backend/src/main/kotlin/one/otpserverui/model/
+cp /c/Users/bru/spare-source/bikebus/app/src/main/java/one/brj/bikebus/model/FlagStopConnectResult.kt backend/src/main/kotlin/one/otpserverui/model/
+sed -i 's/one\.brj\.bikebus\.model/one.otpserverui.model/g' backend/src/main/kotlin/one/otpserverui/model/FlagStopInfo.kt backend/src/main/kotlin/one/otpserverui/model/FlagStopConnectResult.kt
+```
+
+- [ ] **Step 4: Write tests**
+
+For `bringBike`'s new via-constraint: find a real route and its real
+`stopIds` in this project's fixture graph that `bringBike`'s existing
+baseline query (the Aarhus query used throughout this repo) already rides
+through as a transit leg — confirm by reading the itinerary's legs
+directly rather than guessing a route id — then assert that a via-
+constrained `bringBike` call with that route's `stopIds` and
+`numItineraries = 20` still returns at least one itinerary whose legs
+include that route, and that an obviously-wrong/nonexistent via stop id
+returns an empty list (not a crash). For `NearbyRoutesFinder`'s three new
+functions: `pickCheapestQualifying`/`findSplitForRoute` are pure functions
+over `List<Leg>` — construct small synthetic `one.otpserverui.model.Leg`
+instances directly (it's a plain data class, no OTP graph/fixture needed)
+the same way this plan's own `HubRoutingTest.kt` uses synthetic OTP
+`StreetLeg`s for `HubRouting.trimHubConnector` — don't require a live
+fixture search for logic this cheap to test synthetically, per this plan's
+own established precedent (see this plan's ledger, Task 10's fix round).
+
+- [ ] **Step 5: Run tests, then commit**
+
+```bash
+./gradlew :backend:test --tests "*.BringBikeViaTest" --tests "*.NearbyRoutesFinderTest"
+git add backend/src/main/kotlin/one/otpserverui/routing/BringBike.kt backend/src/main/kotlin/one/otpserverui/domain/NearbyRoutesFinder.kt backend/src/main/kotlin/one/otpserverui/model/FlagStopInfo.kt backend/src/main/kotlin/one/otpserverui/model/FlagStopConnectResult.kt backend/src/test/kotlin/one/otpserverui/routing/BringBikeViaTest.kt backend/src/test/kotlin/one/otpserverui/domain/NearbyRoutesFinderTest.kt
+git commit -m "Port via-constrained Bring Bike search and the flag-stop decision logic"
+```
+
+---
+
+### Task 19: Real connect-to-route flow and API rewiring
+
+**Files:**
+- Modify: `backend/src/main/kotlin/one/otpserverui/routing/DropMeOff.kt`
+  (replace `connectByFlaggingABus` with the real `connectToRoute` flow)
+- Modify: `backend/src/main/kotlin/one/otpserverui/api/DropMeOffRoute.kt`
+  (new `ConnectRequest` shape, `NearbyRouteDto` gains `stopIds`)
+- Modify: `backend/src/test/kotlin/one/otpserverui/api/DropMeOffRouteTest.kt`
+  (update the `/connect` test for the new request shape)
+- Test: `backend/src/test/kotlin/one/otpserverui/routing/ConnectToRouteTest.kt`
+
+**Interfaces:**
+- Consumes: `bringBike` (Task 9/18, with via support), `NearbyRoutesFinder`
+  (Task 11/18), `HubRouting.trimHubConnector`/`choose` (Task 10),
+  `nearbyRoutes` (Task 11).
+- Produces: `fun connectToRoute(engine: RoutingEngine, hubs: List<TransitHub>, origin: WgsCoordinate, destination: WgsCoordinate, routeGtfsId: String, routeStopIds: List<String>, timeMode: TimeMode, dateTime: Instant, preferHubs: Boolean): FlagStopConnectResult?`
+  — replaces `connectByFlaggingABus` entirely (delete it; nothing else in
+  this repo calls it after this task).
+
+- [ ] **Step 1: Read bikebus's real orchestration one more time**
+
+Read `bikebus/app/src/main/java/one/brj/bikebus/TripViewModel.kt` lines
+570-698 (`connectToRoute`, `connectViaRoute`, `buildStitchedNearbyItinerary`,
+`confirmFlagStop`) — quoted in full in this plan's amendment research (see
+the SDD ledger's pre-Task-18 entry) — before writing this task's code. The
+real flow, adapted to this project's stateless-HTTP shape (bikebus has
+`state.itineraries` as an already-fetched baseline from the screen's own
+prior `/search` call; this project's `/connect` endpoint has no session
+state, so it must compute its own fresh baseline — **Ruling, made when this
+amendment was written**: call `bringBike` once more with no via constraint,
+same origin/destination/timeMode/dateTime, to get a comparable baseline
+cost, mirroring what `state.itineraries`' cheapest entry already represents
+in bikebus. Cost if wrong: one extra real search per `/connect` call,
+which is already an expensive, low-frequency, user-triggered endpoint —
+negligible.):
+
+```kotlin
+fun connectToRoute(
+    engine: RoutingEngine,
+    hubs: List<TransitHub>,
+    origin: WgsCoordinate,
+    destination: WgsCoordinate,
+    routeGtfsId: String,
+    routeStopIds: List<String>,
+    timeMode: TimeMode,
+    dateTime: Instant,
+    preferHubs: Boolean,
+): FlagStopConnectResult? {
+    val plainLegs = connectViaRoute(engine, origin, destination, routeGtfsId, routeStopIds, timeMode, dateTime) ?: return null
+
+    var finalLegs = plainLegs
+    var hubName: String? = null
+    if (preferHubs) {
+        val split = NearbyRoutesFinder.findSplitForRoute(plainLegs, hubs, routeGtfsId)
+        if (split != null) {
+            val stitched = runCatching {
+                buildStitchedNearbyItinerary(engine, origin, destination, split.hub, routeGtfsId, routeStopIds, split.routeOnOriginSide, timeMode, dateTime)
+            }.getOrNull()
+            if (stitched != null && stitched.any { it.routeGtfsId == routeGtfsId }) {
+                val (chosen, chosenHubName) = HubRouting.choose(
+                    listOf(toOtpLikeCost(plainLegs)), toOtpLikeCost(stitched)?.let { it }, split.hub.name,
+                )
+                // see Step 2 for why HubRouting.choose's real signature needs adapting here
+            }
+        }
+    }
+
+    val baseline = bringBike(engine, origin, destination, timeMode, dateTime)
+    val extraRideSeconds = baseline.minOfOrNull { it.totalDuration().seconds.toDouble() }
+        ?.let { baselineCost -> finalLegs.sumOf { it.durationSeconds } - baselineCost }
+
+    val busLeg = finalLegs.firstOrNull { it.routeGtfsId == routeGtfsId }
+    val flagStopInfo = busLeg?.let { confirmFlagStop(engine, it, finalLegs.last(), destination, timeMode, dateTime) }
+
+    return FlagStopConnectResult(legs = finalLegs, flagStopInfo = flagStopInfo, extraRideSeconds = extraRideSeconds, hubName = hubName)
+}
+```
+
+**This sketch has a real, known gap the implementer must resolve, not
+paper over**: `HubRouting.choose(baseline: List<Itinerary>, stitched:
+Itinerary?, hubName: String): Pair<List<Itinerary>, String?>` (Task 10)
+operates on real OTP `Itinerary`, but `plainLegs`/`stitched` here are
+app-level `List<Leg>` (post-`toAppItinerary()`, matching bikebus's own
+`connectToRoute` which does the same comparison on app-level `Itinerary(legs
+= plainLegs)` — bikebus has its OWN app-level `Itinerary`/`totalDurationSeconds`
+to compare with, this project's `HubRouting.choose` does not operate on the
+app-level type at all. Resolve this by either (a) writing a small,
+app-level-`Leg`-based equivalent of `HubRouting.choose`'s cost-comparison
+logic directly in this function (it's a short function — `MAX_ACCEPTABLE_DETOUR_SECONDS`
+based comparison of two duration sums — not worth forcing through the
+OTP-native `HubRouting.choose`), or (b) another approach you judge sound.
+Do not force app-level `List<Leg>` through a function typed for real OTP
+`Itinerary` via a hack — pick a real, type-correct design and document why.
+
+- [ ] **Step 2: Write `connectViaRoute`, `buildStitchedNearbyItinerary`, `confirmFlagStop`**
+
+Port these three following the same adaptation discipline as Step 1 — read
+bikebus's real versions (lines 612-624, 630-671, 673-698 of
+`TripViewModel.kt`) and adapt call-by-call to this project's real APIs:
+`connectViaRoute` calls `bringBike(..., viaStopIds = routeStopIds,
+numItineraries = 20)` (the real `CONNECT_BATCH_SIZE` value, confirmed from
+bikebus's source — hardcode `20` directly, a named constant if you prefer,
+this project has no equivalent shared constants file) then
+`NearbyRoutesFinder.pickCheapestQualifying(...)`.
+`buildStitchedNearbyItinerary` mirrors `Step 1`'s own
+`bringBikeWithHubPreference`-style DEPART_AT/ARRIVE_BY branching (already
+in `SearchRoute.kt`, Task 13) but with one side of the split staying
+via-constrained to `routeStopIds` depending on `routeOnOriginSide` — reuse
+`HubRouting.trimHubConnector`, but note it operates on real OTP `List<Leg>`
+(Task 10), not this project's app-level `Leg` — **confirm which `Leg` type
+each function in this chain actually needs before writing it**; this is
+exactly the kind of type-boundary question Step 1's gap also raises, and
+getting the app-level-vs-OTP-native boundary right throughout this whole
+task is the main risk here, not the control flow itself (which is already
+fully specified by bikebus's real, working source).
+
+`confirmFlagStop`'s real version calls `decodePolyline`/
+`closestPointOnPolyline` (ported in Task 11, `domain/Geo.kt`/`Polyline.kt`)
+against the matched bus leg's `legGeometryPoints` (confirm this field
+exists on this project's app-level `Leg` — check `Itinerary.kt`, Task 12),
+then plans a short direct route from the flag point to the destination
+using **the final leg's own real mode** (`finalLeg.mode`, a string —
+confirm how to map this back to a real `StreetMode` for `engine.directRoute`'s
+mode parameter; bikebus's real version only ever reaches this with "WALK"
+or "BICYCLE" per its own guard `if (finalLeg.mode != "WALK" && finalLeg.mode
+!= "BICYCLE") return null` — port that same guard), not the hardcoded
+`StreetMode.WALK` the old `connectByFlaggingABus` used (this was one of
+the whole-branch review's own findings).
+
+- [ ] **Step 3: Update the API layer**
+
+```kotlin
+@Serializable
+data class NearbyRouteDto(val routeGtfsId: String, val routeShortName: String?, val stopIds: List<String>, val distanceMeters: Double)
+
+@Serializable
+data class ConnectRequest(
+    val originLat: Double,
+    val originLon: Double,
+    val destinationLat: Double,
+    val destinationLon: Double,
+    val routeGtfsId: String,
+    val routeStopIds: List<String>,
+    val timeMode: String,
+    val dateTimeIso: String,
+    val preferHubs: Boolean = false,
+)
+
+@Serializable
+data class FlagStopInfoDto(
+    val flagLat: Double, val flagLon: Double,
+    val officialFinalLegDistanceMeters: Double, val officialFinalLegDurationSeconds: Double,
+    val flagStopDistanceMeters: Double, val flagStopDurationSeconds: Double,
+)
+
+@Serializable
+data class ConnectResponse(val itinerary: ItineraryDto, val flagStopInfo: FlagStopInfoDto?, val extraRideSeconds: Double?, val hubName: String?)
+```
+
+`GET /nearby-routes` now includes `stopIds` in each `NearbyRouteDto` (so a
+client can carry them straight into a later `/connect` call's
+`routeStopIds` — this is the real fix for the API-shape gap the whole-branch
+review found). `POST /connect` takes the new `ConnectRequest`, calls
+`connectToRoute(...)`, and on a null result responds `422
+SearchErrorResponse("unreachable")` (unchanged from before); on success,
+maps the real `FlagStopConnectResult` to `ConnectResponse` (the itinerary's
+`legs`/`exceedsBikeLimit`/`hasLongWalkEgress` map through `ItineraryDto`
+exactly as `/search`/the old `/connect` already did — construct a throwaway
+app-level `Itinerary(legs = result.legs)` to reuse the existing mapping
+code, or extract a small shared `List<Leg>.toItineraryDto()` helper if that
+reads cleaner. Validate `timeMode` the same way `/search` does
+(`"arrive_by"` vs. anything else defaults to `depart_at` — or, better,
+reuse this task's Task 20 sibling fix for `/search`'s own
+`timeMode`-validation gap if Task 20 lands first; check the ledger for
+whether Task 20 has already run before writing this).
+
+- [ ] **Step 4: Write tests, then commit**
+
+Update `DropMeOffRouteTest.kt`'s existing `/connect` test for the new
+request/response shape (a real end-to-end query: use `GET /nearby-routes`
+first to find a real route+stopIds near the known Aarhus origin, then feed
+that route's real `routeGtfsId`/`stopIds` into `/connect` — don't
+hand-guess a route id). Add `ConnectToRouteTest.kt` exercising
+`connectToRoute` directly (not just over HTTP) for: a real route that
+exists and is reachable (non-null result, real flag-stop info), and a
+`routeGtfsId` that doesn't appear on any reachable itinerary (returns
+null, not a crash) — mirroring `ParkAndRideFinderTest`'s own
+"honest empty result" precedent (Task 7/8).
+
+```bash
+./gradlew test
+git add backend/src/main/kotlin/one/otpserverui/routing/DropMeOff.kt backend/src/main/kotlin/one/otpserverui/api/DropMeOffRoute.kt backend/src/test/kotlin/one/otpserverui/api/DropMeOffRouteTest.kt backend/src/test/kotlin/one/otpserverui/routing/ConnectToRouteTest.kt
+git commit -m "Implement the real connect-to-route flow (via-constrained search, hub-stitching, flag-stop decision)"
+```
+
+---
+
+### Task 20: Fix wave — hub-stitching detection bug, Park & Ride arrive_by, error-handling hardening
+
+**Files:**
+- Modify: `backend/src/main/kotlin/one/otpserverui/routing/HubRouting.kt`
+  (fix `findHubSplit`'s short-leg blind spot — see Step 1)
+- Modify: `backend/src/main/kotlin/one/otpserverui/api/SearchRoute.kt`
+  (reject `park_and_ride` + `arrive_by`; validate `timeMode` the same way
+  `mode` is already validated)
+- Modify: `backend/src/main/kotlin/one/otpserverui/Main.kt` (install a
+  `StatusPages` plugin)
+- Modify: `backend/src/main/kotlin/one/otpserverui/api/GeocodeRoute.kt`
+  (reject an empty/missing `q` before calling Google; let a real Google
+  error surface as a typed JSON error instead of an uncaught exception)
+- Test: extend `SearchRouteTest.kt`, `GeocodeRouteTest.kt`, add
+  `HubRoutingTest.kt` cases.
+
+This task responds to three of the final whole-branch review's findings
+the user asked to fix now (a fourth, `/geocode`'s N+1 Details-fetching and
+missing rate-limit, is deliberately left as ledgered pre-deployment debt,
+per the user's own choice — do not attempt it here).
+
+- [ ] **Step 1: Fix `findHubSplit`'s short-leg blind spot**
+
+The whole-branch review's real finding: `HubRouting.findHubSplit` (Task 10)
+only matches a transfer when BOTH adjacent legs are `isTransitLeg` — but a
+real transfer between two different stops always has a short street
+(bike/walk) leg between them, which `findHubSplit` sees and skips, so it
+never detects the vast majority of real station transfers. bikebus's own
+version only works because it runs on itinerary data that's already been
+through `dropTinyLegs` (which removes any leg under 150m, collapsing the
+short transfer hop so the two transit legs become directly adjacent) — a
+post-processing step this project never ported (there is no
+`ItineraryPostProcessing.kt`/`dropTinyLegs` here; `HubRouting.kt`'s own
+KDoc already flags this exact gap as a comment, written when it was
+believed not to matter — Task 12 then added real post-processing precedent
+via `ItineraryPostProcessing.kt`'s `dropTinyLegs`, ported for
+`OtpItineraryMapper`'s own use, but nobody revisited `HubRouting.kt`'s
+comment or logic after that).
+
+Fix `findHubSplit` to skip over short (sub-150m, matching `dropTinyLegs`'s
+own real threshold — confirm the exact real value in
+`domain/ItineraryPostProcessing.kt`, Task 12, before hardcoding a new
+constant here) non-transit legs when deciding whether two transit legs are
+"adjacent", rather than requiring literal list-adjacency:
+
+```kotlin
+fun findHubSplit(hubs: List<TransitHub>, itinerary: Itinerary): TransitHub? {
+    val transitLegs = itinerary.legs().filter { it.isTransitLeg || it.distanceMeters() >= SHORT_LEG_THRESHOLD_METERS }
+    // ... adjust the loop to walk `transitLegs` instead of `itinerary.legs()` directly, so a
+    // short connector leg between two transit legs no longer breaks their adjacency.
+}
+```
+
+(This is a sketch, not exact final code — the real fix needs the loop
+logic rewritten carefully so it still correctly identifies which hub to
+split at and doesn't accidentally change `trimHubConnector`'s own,
+separate, still-correct 50m connector-trimming logic, which is unrelated
+and must not be touched.) Write a synthetic-leg unit test (the same
+`StreetLeg.of()`-based technique `HubRoutingTest.kt` already established in
+Task 10's fix round) proving the fix: construct an itinerary with
+`[transit-leg, short-connector-leg(<150m, non-transit), transit-leg]` near
+a cataloged hub, and confirm `findHubSplit` now returns that hub (it would
+have returned `null` before this fix — assert this is a real behavior
+change, not a no-op).
+
+- [ ] **Step 2: Reject Park & Ride + arrive_by**
+
+In `SearchRoute.kt`'s `/search` handler, before dispatching to
+`ParkAndRideFinder.search` (which only ever accepts a departure `Instant`
+and silently treats it as such regardless of `request.timeMode`): if
+`request.mode == "park_and_ride" && request.timeMode == "arrive_by"`,
+respond `400 SearchErrorResponse("unsupported_time_mode")` and return,
+mirroring bikebus's own real guard (`planParkAndRide`'s KDoc: "ARRIVE_BY
+isn't supported... `search()` rejects that combination before
+`fetchItineraries` is ever called"). Also validate `request.timeMode`
+itself the same way `request.mode` is already validated — any value other
+than `"depart_at"`/`"arrive_by"` should be a typed 400
+(`"invalid_time_mode"` or similar), not silently treated as depart-at.
+Add tests for both: a `park_and_ride`+`arrive_by` request returns 400, and
+a request with `timeMode: "nonsense"` returns 400.
+
+- [ ] **Step 3: Install a `StatusPages` plugin and harden `/geocode`'s error path**
+
+In `Main.kt`'s `module()`, install `io.ktor.server.plugins.statuspages.StatusPages`
+covering, at minimum: `NumberFormatException`/`IllegalStateException` (the
+`checkNotNull`/`.toDouble()` failures on `/nearby-routes`'s query params) →
+400 with a typed error body; `DateTimeParseException` on `/connect`'s
+`dateTimeIso` → 400 `"invalid_request"` (matching `/search`'s own existing
+handling); any exception thrown by `GooglePlacesGeocodeClient.search`
+(a failed/timed-out/4xx-5xx Google call) → a typed JSON error (e.g. `502
+SearchErrorResponse("geocode_unavailable")`), not a raw 500. In
+`GeocodeRoute.kt`'s `geocodeRoute`, reject an empty/blank `q` before ever
+calling `client.search(...)` (`call.respond(GeocodeResponse(emptyList()))`
+immediately, matching the spec's existing "no results" contract, with zero
+calls to Google for an empty query). Add tests: a malformed `lat` on
+`/nearby-routes` returns a typed 400 (not a raw 500), an empty `q` on
+`/geocode` returns an empty candidate list with zero calls into the
+injected `GeocodeClient` (use a spy/counting fake to prove this, not just
+an empty-list assertion), and a `GeocodeClient` that throws produces a
+typed error response, not an unhandled exception propagating out of the
+test.
+
+- [ ] **Step 4: Run the full suite, then commit**
+
+```bash
+./gradlew test
+git add backend/src/main/kotlin/one/otpserverui/routing/HubRouting.kt backend/src/main/kotlin/one/otpserverui/api/SearchRoute.kt backend/src/main/kotlin/one/otpserverui/Main.kt backend/src/main/kotlin/one/otpserverui/api/GeocodeRoute.kt backend/src/test/
+git commit -m "Fix hub-detection blind spot, reject unsupported Park & Ride arrive_by, harden error handling"
+```
+
+---
 
 This plan's scope ends here — a complete, independently-testable JSON API
-backend. The frontend (Bun/HTML/CSS/TS) is a separate follow-up plan, per
-this plan's own header note and the spec's own sequencing guidance.
+backend covering the full feature set the spec promises (Park & Ride,
+Bring Bike with hub preference, Drop-me-off's real two-step nearby-routes/
+connect flow, geocoding). The frontend (Bun/HTML/CSS/TS) and pre-deployment
+hardening (resource bounds, the vestigial transit-search lock, `/geocode`
+rate-limiting/N+1 fetching) are separate follow-up work, per this plan's
+own header note, the spec's own sequencing guidance, and the final
+whole-branch review's own explicit scoping recommendation.
