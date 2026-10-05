@@ -248,8 +248,12 @@ private fun confirmFlagStop(
  * `connectToRoute`, which also wraps its single `plainLegs` baseline in a one-element list before
  * calling its own `HubRouting.choose`.
  */
-private fun chooseConnection(baselineLegs: List<Leg>, stitchedLegs: List<Leg>?, hubName: String): Pair<List<Leg>, String?> {
+internal fun chooseConnection(baselineLegs: List<Leg>, stitchedLegs: List<Leg>?, hubName: String): Pair<List<Leg>, String?> {
     if (stitchedLegs == null) return baselineLegs to null
+    // Unlike HubRouting.choose, there's no `?: return listOf(stitched) to hubName` empty-baseline
+    // fallback here: baselineLegs comes from connectViaRoute's own non-null return (connectToRoute
+    // returns null before ever calling this function otherwise), so it's guaranteed non-empty by
+    // construction -- that branch genuinely doesn't apply to this call site.
     val baselineCost = Itinerary(legs = baselineLegs).totalDurationSeconds
     val stitchedCost = Itinerary(legs = stitchedLegs).totalDurationSeconds
     return if (stitchedCost - baselineCost <= MAX_ACCEPTABLE_DETOUR_SECONDS) {
@@ -270,7 +274,7 @@ private fun chooseConnection(baselineLegs: List<Leg>, stitchedLegs: List<Leg>?, 
  * ([CONNECTOR_LEG_MAX_METERS]) are copied verbatim from [HubRouting.trimHubConnector]; "transit"
  * here means "not WALK/BICYCLE", matching [NearbyRoutesFinder]'s own private `isTransit` helper.
  */
-private fun trimAppHubConnector(legs: List<Leg>, fromEnd: Boolean): List<Leg> {
+internal fun trimAppHubConnector(legs: List<Leg>, fromEnd: Boolean): List<Leg> {
     val edge = if (fromEnd) legs.lastOrNull() else legs.firstOrNull()
     val isConnector = edge != null && isAppStreetLeg(edge) && edge.distanceMeters < CONNECTOR_LEG_MAX_METERS
     if (!isConnector) return legs
@@ -278,4 +282,4 @@ private fun trimAppHubConnector(legs: List<Leg>, fromEnd: Boolean): List<Leg> {
 }
 
 // "Transit" here means "not WALK/BICYCLE", matching NearbyRoutesFinder's own private `isTransit`.
-private fun isAppStreetLeg(leg: Leg): Boolean = leg.mode == "WALK" || leg.mode == "BICYCLE"
+internal fun isAppStreetLeg(leg: Leg): Boolean = leg.mode == "WALK" || leg.mode == "BICYCLE"
