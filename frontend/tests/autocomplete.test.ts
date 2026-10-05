@@ -13,7 +13,7 @@ const addressSuggestion: GeocodeCandidate = { placeId: "p2", label: "Langelandsg
 
 test("renders an empty list cleanly when there are no suggestions and no favorites/recents", () => {
   const list = freshList();
-  renderSuggestions(list, [], { favorites: [], recents: [] }, { onSelectSuggestion: () => {}, onSelectSaved: () => {} });
+  renderSuggestions(list, [], { favorites: [], recents: [] }, { onSelectSuggestion: () => {}, onSelectSaved: () => {}, onAddHouseNumber: () => {} });
   expect(list.children.length).toBe(0);
 });
 
