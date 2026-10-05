@@ -7,6 +7,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Routing
@@ -86,6 +87,19 @@ fun Routing.geocodeRoute(client: GeocodeClient) {
             call.respond(GeocodeResponse(emptyList()))
             return@get
         }
-        call.respond(GeocodeResponse(client.search(query)))
+        // Locally scoped (mirrors `/search`'s own local `RoutingValidationException` catch around
+        // `ParkAndRideFinder.search`/`bringBikeWithHubPreference`): a failed/timed-out/4xx-5xx
+        // Google Places call -- or any other exception thrown while resolving candidates -- is a
+        // geocode-specific failure and must be labeled as such. It must NOT fall through to
+        // `Main.kt`'s backend-wide `StatusPages` `Throwable` catch-all, which is a generic,
+        // route-agnostic backstop for truly unanticipated failures and reports a neutral
+        // "internal_error" rather than claiming to know the cause.
+        val candidates = try {
+            client.search(query)
+        } catch (e: Exception) {
+            call.respond(HttpStatusCode.BadGateway, SearchErrorResponse("geocode_unavailable"))
+            return@get
+        }
+        call.respond(GeocodeResponse(candidates))
     }
 }

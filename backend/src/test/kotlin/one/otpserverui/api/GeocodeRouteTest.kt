@@ -9,6 +9,7 @@ import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
+import io.ktor.server.routing.get as serverGet
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.test.runTest
@@ -81,20 +82,41 @@ class GeocodeRouteTest {
         testApplication {
             application {
                 install(ContentNegotiation) { json() }
-                // Mirrors Main.kt's real `StatusPages` install (Task 20) -- this is the catch-all
-                // that turns a failed/timed-out/4xx-5xx Google call into a typed error instead of
-                // a raw 500/an exception escaping the test.
-                install(StatusPages) {
-                    exception<Throwable> { call, _ ->
-                        call.respond(HttpStatusCode.BadGateway, SearchErrorResponse("geocode_unavailable"))
-                    }
-                }
+                // No `StatusPages` install here (Task 20 fix round 1): the typed
+                // "geocode_unavailable" response now comes from `geocodeRoute`'s own local
+                // try/catch around `client.search(...)`, not from a global exception handler --
+                // this test exercises that local catch directly.
                 routing { geocodeRoute(ThrowingGeocodeClient()) }
             }
             val response = client.get("/geocode?q=Langelandsg")
             assertThat(response.status).isEqualTo(HttpStatusCode.BadGateway)
             val body = Json.decodeFromString<SearchErrorResponse>(response.bodyAsText())
             assertThat(body.error).isEqualTo("geocode_unavailable")
+        }
+    }
+
+    @Test
+    fun `an exception unrelated to geocode falls through to the global catch-all as internal_error, not geocode_unavailable`() = runTest {
+        testApplication {
+            application {
+                install(ContentNegotiation) { json() }
+                // Mirrors Main.kt's real, backend-wide `StatusPages` install (Task 20 fix round
+                // 1): a generic, unrelated failure elsewhere in the app must be labeled
+                // "internal_error" (500), never mislabeled "geocode_unavailable" (502) just
+                // because that used to be the only registered catch-all.
+                install(StatusPages) {
+                    exception<Throwable> { call, _ ->
+                        call.respond(HttpStatusCode.InternalServerError, SearchErrorResponse("internal_error"))
+                    }
+                }
+                routing {
+                    serverGet("/unrelated") { throw IllegalArgumentException("not a geocode failure") }
+                }
+            }
+            val response = client.get("/unrelated")
+            assertThat(response.status).isEqualTo(HttpStatusCode.InternalServerError)
+            val body = Json.decodeFromString<SearchErrorResponse>(response.bodyAsText())
+            assertThat(body.error).isEqualTo("internal_error")
         }
     }
 }

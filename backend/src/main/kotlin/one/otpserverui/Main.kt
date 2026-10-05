@@ -61,10 +61,11 @@ fun Application.module(engine: RoutingEngine, hubs: List<TransitHub>, geocodeCli
     // (NumberFormatException for a malformed number, IllegalStateException for a missing
     // required one), `/connect`'s `Instant.parse(request.dateTimeIso)` (DateTimeParseException --
     // matching `/search`'s own existing, locally-caught "invalid_request" contract for the same
-    // kind of bad input), and -- as a catch-all below those more specific handlers -- any
-    // exception a failed/timed-out/4xx-5xx call through `GooglePlacesGeocodeClient.search` throws
-    // (`/geocode` is the only handler left with no local catch of its own for a routing-engine- or
-    // request-shape exception, so this backstop is effectively scoped to it in practice). Ktor's
+    // kind of bad input), and -- as a final backstop below those more specific handlers -- a
+    // generic, backend-wide `Throwable` catch-all. This is a genuine app-level fallback (NOT
+    // scoped to any one route), so it must never claim to know what failed: `/geocode`'s own
+    // Google-call failures are now mapped locally in `geocodeRoute` (see GeocodeRoute.kt), so this
+    // catch-all only ever sees a truly unanticipated exception from anywhere in the app. Ktor's
     // `StatusPages` dispatch picks the most specific registered exception type for a given thrown
     // exception's class hierarchy, not registration order, so the `Throwable` catch-all below
     // never shadows the three specific handlers above it.
@@ -79,7 +80,7 @@ fun Application.module(engine: RoutingEngine, hubs: List<TransitHub>, geocodeCli
             call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("invalid_request"))
         }
         exception<Throwable> { call, _ ->
-            call.respond(HttpStatusCode.BadGateway, SearchErrorResponse("geocode_unavailable"))
+            call.respond(HttpStatusCode.InternalServerError, SearchErrorResponse("internal_error"))
         }
     }
     routing {
