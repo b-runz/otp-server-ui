@@ -64,13 +64,18 @@ Migrated from `bikebus`, all computed server-side in one request per search:
     a route (flagged as a long final walk) instead of "no route."
   - **Bring Bike** — direct bike route plus bike-access/bike-egress transit
     itineraries, filtered by an over-limit bike-distance warning (10 km).
-  - **Drop-me-off** — nearby-routes-at-destination lookup, plus the "flag a
-    passing bus" connect flow (walk to intercept a bus mid-route rather than
-    at a scheduled stop). `bikebus`'s current implementation of this last
-    piece calls a separate, pre-existing remote OTP server over GraphQL
-    (`OtpQueryBuilder`/`otpApi`) — this project reimplements it directly
-    against the same in-process routing code every other mode uses, so no
-    GraphQL dependency survives into this project at all.
+  - **Drop-me-off** — a real, two-step flow: `GET /nearby-routes` finds real
+    routes (with their GTFS route id and stop ids) near the destination;
+    `POST /connect` then runs a full, via-constrained origin-to-destination
+    search restricted to the chosen route (origin coordinates, the route's
+    id + stop ids, time mode, prefer-hubs), picks the cheapest itinerary that
+    actually rides it, optionally hub-stitches, and finds a flag point on the
+    bus's own path to compare against the official stop. `bikebus`'s current
+    implementation of this last piece calls a separate, pre-existing remote
+    OTP server over GraphQL (`OtpQueryBuilder`/`otpApi`) — this project
+    reimplements the whole thing directly against the same in-process routing
+    code every other mode uses, so no GraphQL dependency survives into this
+    project at all.
 - **Time modes:** Depart at / Arrive by (both, for Bring Bike and
   Drop-me-off; Park & Ride keeps Depart-at-only, see Non-Goals).
 - **Preferences:** Prefer transit hubs (hub-stitching: re-plan a two-leg trip
@@ -104,8 +109,10 @@ Two independently deployable pieces, served as a single process on the VM:
 |                                                              |
 |  +----------------------------------------------------+    |
 |  | JSON API                                             |    |
-|  |  POST /search      -> routing/ (in-process)          |    |
-|  |  GET  /geocode      -> Google Places proxy            |    |
+|  |  POST /search         -> routing/ (in-process)        |    |
+|  |  GET  /nearby-routes  -> routing/ (in-process)        |    |
+|  |  POST /connect        -> routing/ (in-process)        |    |
+|  |  GET  /geocode        -> Google Places proxy          |    |
 |  +----------------------------------------------------+    |
 |                                                              |
 |  +----------------------------------------------------+    |
@@ -158,28 +165,57 @@ follow-up calls.
   plus its `kryosupport/` package, ~8 files, using Kryo — much smaller than
   the ingestion pipeline these two rely on).
 - **`POST /search` request:** origin/destination coordinates, mode
-  (park-and-ride / bring-bike / drop-me-off), time mode + datetime, prefer-
-  hubs flag, and (drop-me-off only) any via-stop context the connect flow
-  needs.
+  (park_and_ride / bring_bike), time mode + datetime, prefer-hubs flag.
 - **`POST /search` response:** a complete, ready-to-render itinerary list —
-  legs (mode, distance, duration, endpoints, route name, geometry), and the
-  bike-limit/long-walk badge flags — already computed. Nothing left for the
-  client to calculate.
+  legs (mode, distance, duration, endpoints, route name, departure time),
+  and the bike-limit/long-walk badge flags — already computed. Nothing left
+  for the client to calculate.
+- **`GET /nearby-routes?lat=&lon=&radiusMeters=`:** real routes near a
+  destination, each with its GTFS route id, short name, distance, and its
+  real stop ids (needed by `/connect` below) — Drop-me-off's first step.
+- **`POST /connect` request:** origin coordinates, destination coordinates,
+  the chosen route's GTFS id + stop ids (from `/nearby-routes`), time mode +
+  datetime, prefer-hubs flag. Drop-me-off's second step: a full,
+  via-constrained search restricted to that route.
+- **`POST /connect` response:** the resulting itinerary (same shape as a
+  search result), an optional flag-stop comparison (official stop vs. the
+  flag point found on the bus's own path, each with distance/duration), the
+  extra ride time versus a fresh baseline search, and the hub name if
+  hub-stitching applied — or a typed `unreachable` error.
 - **`GET /geocode?q=`:** thin proxy to Google Places Autocomplete, holding
   the API key server-side so it never reaches the browser.
 
 ### Frontend
 
-- **Toolchain:** Bun, plain HTML/CSS/TypeScript. No UI framework.
-- **Fully client-side, zero backend calls except the two above:** address
-  autocomplete UI (calling `/geocode`), the house-number affordance,
-  from/to swap, mode toggle, depart/arrive + date/time pickers, favorites
-  and recents (`localStorage`, mirroring today's per-device behavior — no
-  server-side persistence), itinerary expand/collapse (pure UI state, no
-  data change).
-- **Rendering:** itinerary cards built directly from the `/search` JSON
-  response — no follow-up calls, no client-side computation of badges or
-  totals beyond simple display formatting (e.g. duration-to-"1h 12m").
+- **Toolchain:** Bun, plain HTML/CSS/TypeScript. No UI framework —
+  considered and declined adopting one (e.g. Svelte) during frontend
+  planning: this app is one screen with modest interactivity, and a
+  hand-written render layer stays small enough (roughly 150-200 lines
+  across 4-5 sections) that a compiled framework's benefit doesn't offset
+  its added toolchain complexity.
+- **State/rendering approach:** one plain state object, mutated by named
+  functions (`setSearchMode`, `selectFromSuggestion`, etc.), each of which
+  calls the specific hand-written `render*()` function(s) for the sections
+  that depend on what changed — no virtual DOM, no diffing, no reactive
+  framework.
+- **Fully client-side, zero backend calls except the four above:** address
+  autocomplete UI (calling `/geocode`, 300ms debounce, 3-character minimum
+  query length, matching `bikebus`'s real `onFromQueryChanged`/
+  `onToQueryChanged` timing), the house-number affordance, from/to swap,
+  mode toggle, depart/arrive + date/time pickers, favorites and recents
+  (`localStorage`, mirroring today's per-device behavior — no server-side
+  persistence; recents cap at 10, most-recent-first, deduplicated by place,
+  matching `bikebus`'s real `rememberRecent`), itinerary expand/collapse
+  (pure UI state, no data change).
+- **Rendering:** itinerary cards built directly from the `/search`/
+  `/connect` JSON response — no follow-up calls, no client-side computation
+  of badges or totals beyond simple display formatting (e.g.
+  duration-to-"1h 12m").
+- **Not ported from `bikebus`:** the "Wake up server" button
+  (`WakeStatus`/`otpWakeApi`) — it existed only because `bikebus`'s
+  Drop-me-off used to depend on a separate, possibly-sleeping remote OTP
+  server over GraphQL. This project's backend is one persistent process
+  with nothing to wake.
 
 ## Data Pipeline and Graph Loading
 
@@ -220,8 +256,8 @@ into memory) are two separate concerns here, deliberately kept apart:
    local UI state.
 2. Click Search: one `POST /search` with the full request body.
 3. Backend builds a `RouteRequest`, calls the matching composition
-   (`ParkAndRideFinder.search`, the Bring Bike composition, or the
-   Drop-me-off nearby+connect flow), runs the filter chain, maps to the
+   (`ParkAndRideFinder.search` or the Bring Bike composition, including
+   hub-stitching when requested), runs the filter chain, maps to the
    response DTO, returns it.
 4. Frontend renders the itinerary list directly from that response. Per-leg
    "Maps" links are built client-side from leg coordinates/mode/departure
@@ -230,21 +266,48 @@ into memory) are two separate concerns here, deliberately kept apart:
 No intermediate network calls, no client-side re-fetching of "more detail"
 for an itinerary already returned.
 
+## Data Flow: Drop-me-off (two steps)
+
+1. Click "Drop me off": one `GET /nearby-routes` against the resolved
+   destination. Frontend renders the returned routes as a list.
+2. User taps a route: one `POST /connect`, carrying that route's real GTFS
+   id + stop ids (from step 1's response) alongside origin/destination/time/
+   preferences.
+3. Backend runs the real connect-to-route flow (`connectToRoute`): a
+   via-constrained search restricted to the chosen route, picks the
+   cheapest qualifying itinerary, optionally hub-stitches, finds a flag
+   point on the bus's own path, and computes the official-stop-vs-flag-point
+   comparison plus the extra ride time versus a fresh baseline search.
+4. Frontend renders the connect result inline under the selected route: the
+   itinerary's legs (each with its own Maps link), the comparison panel, and
+   a dedicated Maps link to the flag point — or the typed `unreachable`
+   error if no route exists at all.
+
 ## Error Handling
 
-- A `RoutingValidationException`-equivalent (origin/destination outside the
-  loaded graph, or linked but disconnected) maps to a specific error shape
-  in the `/search` response (e.g. `{"error": "no_coverage"}` /
-  `{"error": "unreachable"}`), not a generic 500 — the frontend renders a
-  clear, mode-appropriate message, mirroring `bikebus`'s existing
-  `RoutingError.NoCoverageForArea` handling.
-- `/geocode` proxy failures (Google API errors, rate limits) return a small
-  JSON error the frontend can show inline near the address field, without
-  failing the whole page.
-- Startup graph-load failure (missing file, corrupt/incompatible serialized
-  format) is fatal — the process does not start serving traffic with a
-  partially-loaded or absent graph. (Decide exact health-check/readiness
-  behavior during implementation planning.)
+Every endpoint returns a typed `{"error": "<code>"}` body (never a bare
+500) for every error path reachable from valid-looking client input. The
+real, final set of codes, each with its own frontend-rendered message:
+
+- `"no_coverage"` (422) — origin/destination outside the loaded graph, or
+  linked but disconnected (`/search`'s `RoutingValidationException` catch).
+- `"unreachable"` (422) — `/connect` found no route to the flag point at
+  all.
+- `"unknown_mode"` (400) — `/search`'s `mode` field isn't `park_and_ride`/
+  `bring_bike`.
+- `"invalid_time_mode"` (400) — `timeMode` isn't `depart_at`/`arrive_by`.
+- `"unsupported_time_mode"` (400) — `park_and_ride` combined with
+  `arrive_by` (Park & Ride is depart-at only, per Non-Goals).
+- `"invalid_request"` (400) — an unparseable `dateTimeIso`.
+- `"geocode_unavailable"` (502) — a failed/timed-out/erroring call to
+  Google Places from `/geocode`.
+- `"internal_error"` (500) — a generic backend-wide catch-all for anything
+  else uncaught; the frontend shows a generic "something went wrong, try
+  again" message for this one, since it carries no specific meaning.
+
+Startup graph-load failure (missing file, corrupt/incompatible serialized
+format) is fatal — the process does not start serving traffic with a
+partially-loaded or absent graph.
 
 ## Testing
 
@@ -272,19 +335,27 @@ for an itinerary already returned.
   GTFS/OSM.pbf refresh cadence are implementation-planning decisions, not
   fixed here.
 
-## Open Items Carried Into Implementation Planning
+## Backend Status
 
-- The exact stubbing needed for `SerializedGraphObject`'s handful of
-  repository dependencies (`WorldEnvelopeRepository`,
-  `VehicleParkingRepository`, `OsmInfoGraphBuildRepository`,
-  `StopConsolidationRepository`, `EmissionRepository`,
-  `EmpiricalDelayRepository`, `FareServiceFactory`) — confirm each is safe
-  to stub as an empty/no-op implementation (this project doesn't use any of
-  the features they back), the way `bikebus`'s own `STUBS.md` already
-  stubbed comparable boundary classes.
-- The real, standalone-OTP command/config needed to build a serialized
-  graph file from a GTFS zip + Denmark OSM `.pbf` extract, and how often
-  that data gets refreshed operationally.
-- The exact via-stop/flag-stop request shape for Drop-me-off's connect flow,
-  once that logic is ported off `OtpQueryBuilder`/GraphQL onto the
-  in-process routing code.
+The backend described above is fully implemented and tested (20-task plan,
+complete as of 2026-10-05) — every item this section originally listed as
+open (repository stubbing, the via-stop/flag-stop request shape, the real
+connect-to-route flow) is resolved; see that plan's own ledger for detail.
+Known, deliberately accepted backend debt, out of scope for the frontend:
+`/geocode` has no rate limiting and fetches full place-details for every
+autocomplete suggestion rather than just the chosen one; `/search`/
+`/nearby-routes` have no resource bounds (unbounded `radiusMeters`, no
+distance cap or timeout); a leftover lock still serializes transit searches
+unnecessarily. None of these block building the frontend against the real,
+current API.
+
+## Open Items Carried Into Frontend Implementation Planning
+
+- The exact recents-list cap (10, most-recent-first, deduplicated by place)
+  and favorites/recents' exact stored shape, confirmed from `bikebus`'s real
+  `SavedPlacesStore`/`TripViewModel.rememberRecent` — carried into the
+  implementation plan as fixed values, not re-derived there.
+- Exact DOM-testing capability of Bun's built-in test runner for the
+  smoke-test scenario (form fill → submit → result rendered) — confirm
+  during implementation planning rather than assuming jsdom-equivalent
+  support exists out of the box.
