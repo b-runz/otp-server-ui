@@ -223,4 +223,29 @@ class SearchRouteTest {
 
         assertThat(stitched.generalizedCost()).isEqualTo(250)
     }
+
+    @Test
+    fun `POST search itinerary legs carry human-readable endpoint names`() = runTest {
+        testApplication {
+            application {
+                install(ContentNegotiation) { json() }
+                routing { searchRoute(testEngine(), HubCatalog.load()) }
+            }
+            val response = client.post("/search") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    {"mode":"bring_bike","timeMode":"depart_at",
+                     "originLat":56.171798,"originLon":10.172087,
+                     "destinationLat":56.102216,"destinationLon":10.17293,
+                     "dateTimeIso":"2026-09-13T14:00:00Z","preferHubs":false}
+                    """.trimIndent()
+                )
+            }
+            val body = Json.decodeFromString<SearchResponse>(response.bodyAsText())
+            val firstLeg = body.itineraries.first().legs.first()
+            assertThat(firstLeg.fromName).isNotNull()
+            assertThat(firstLeg.toName).isNotNull()
+        }
+    }
 }

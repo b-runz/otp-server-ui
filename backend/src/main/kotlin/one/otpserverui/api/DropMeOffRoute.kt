@@ -100,7 +100,7 @@ fun Routing.dropMeOffRoutes(engine: RoutingEngine, hubs: List<TransitHub>) {
             ConnectResponse(
                 itinerary = ItineraryDto(
                     legs = app.legs.map {
-                        LegDto(it.mode, it.distanceMeters, it.durationSeconds, it.fromLat, it.fromLon, it.toLat, it.toLon, it.routeShortName, it.departureTime.toEpochSecond())
+                        LegDto(it.mode, it.distanceMeters, it.durationSeconds, it.fromLat, it.fromLon, it.toLat, it.toLon, it.fromName, it.toName, it.routeShortName, it.departureTime.toEpochSecond())
                     },
                     exceedsBikeLimit = app.exceedsBikeLimit,
                     hasLongWalkEgress = app.hasLongWalkEgress,

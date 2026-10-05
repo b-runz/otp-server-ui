@@ -23,6 +23,8 @@ data class LegDto(
     val fromLon: Double,
     val toLat: Double,
     val toLon: Double,
+    val fromName: String?,
+    val toName: String?,
     val routeShortName: String?,
     val departureEpochSecond: Long,
 )
