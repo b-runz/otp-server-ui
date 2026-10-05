@@ -7,7 +7,39 @@
   <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
-  <main id="app"></main>
+  <main id="app">
+    <h1>Trip Planner</h1>
+    <form id="trip-form" novalidate>
+      <div class="address-field">
+        <label for="from-input">From</label>
+        <input id="from-input" type="text" autocomplete="off" />
+        <ul id="from-suggestions" class="suggestions" hidden></ul>
+      </div>
+
+      <button type="button" id="swap-button" aria-label="Swap From and To">⇅ Swap</button>
+
+      <div class="address-field">
+        <label for="to-input">To</label>
+        <input id="to-input" type="text" autocomplete="off" />
+        <ul id="to-suggestions" class="suggestions" hidden></ul>
+      </div>
+
+      <fieldset id="mode-toggle"><legend>Mode</legend></fieldset>
+      <fieldset id="time-toggle"><legend>Time</legend></fieldset>
+
+      <label for="datetime-input">Date &amp; time</label>
+      <input id="datetime-input" type="datetime-local" />
+
+      <label><input type="checkbox" id="prefer-hubs-checkbox" /> Prefer transit hubs</label>
+
+      <button type="submit" id="search-button">Search</button>
+      <button type="button" id="drop-me-off-button">Drop me off</button>
+    </form>
+
+    <div id="error-banner" role="alert" hidden></div>
+    <div id="results"></div>
+    <div id="nearby-routes"></div>
+  </main>
   <script type="module" src="./src/main.ts"></script>
 </body>
 </html>
