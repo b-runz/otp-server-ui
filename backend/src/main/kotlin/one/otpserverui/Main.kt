@@ -19,6 +19,7 @@ import io.ktor.server.routing.routing
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.format.DateTimeParseException
+import kotlinx.serialization.json.Json
 import one.otpserverui.api.GeocodeClient
 import one.otpserverui.api.GooglePlacesGeocodeClient
 import one.otpserverui.api.SearchErrorResponse
@@ -47,12 +48,19 @@ fun main() {
     // JSON converter, or every `.body<T>()` call inside it fails at runtime with no compile-time or
     // test signal (see GooglePlacesGeocodeClient's own KDoc in GeocodeRoute.kt). CIO is named
     // explicitly here rather than relying on HttpClient()'s default-engine resolution.
+    //
+    // ignoreUnknownKeys = true is required: Google's real Places API (New) responses always carry
+    // fields this backend's DTOs don't declare (`place`, `structuredFormat`, `text.matches`, ...),
+    // and the default strict Json() throws JsonDecodingException on any of them -- confirmed by a
+    // live-key manual run against the real API (the first time this path was ever exercised against
+    // real data; GooglePlacesGeocodeClientTest.kt now pins this with a captured real response shape).
     val httpClient = HttpClient(CIO) {
-        install(ClientContentNegotiation) { json() }
+        install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
     }
     val geocodeClient = GooglePlacesGeocodeClient(httpClient, apiKey)
 
-    embeddedServer(Netty, port = 8080, module = { module(engine, hubs, geocodeClient) }).start(wait = true)
+    val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
+    embeddedServer(Netty, port = port, module = { module(engine, hubs, geocodeClient) }).start(wait = true)
 }
 
 fun Application.module(

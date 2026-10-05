@@ -36,6 +36,7 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testImplementation("com.google.truth:truth:1.4.4")
     testImplementation("io.ktor:ktor-server-test-host:3.0.3")
+    testImplementation("io.ktor:ktor-client-mock:3.0.3")
 }
 
 application {
