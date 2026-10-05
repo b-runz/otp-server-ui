@@ -74,6 +74,7 @@ export function mountApp(root: HTMLElement): void {
   const autocomplete = createAutocompleteController({
     geocode: async (query, signal) => {
       const result = await geocode(query, signal);
+      if (signal.aborted) return []; // superseded by a later keystroke; never surface as an error
       if (isApiError(result)) {
         update({ ...state, error: messageForError(result) });
         return [];
