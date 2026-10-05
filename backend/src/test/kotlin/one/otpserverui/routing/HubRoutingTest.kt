@@ -7,8 +7,17 @@ import kotlin.io.path.toPath
 import one.otpserverui.GraphLoader
 import one.otpserverui.routing.parkandride.ParkAndRideFinder
 import org.junit.jupiter.api.Test
+import org.locationtech.jts.geom.LineString
+import org.opentripplanner.core.model.basic.Cost
+import org.opentripplanner.core.model.i18n.NonLocalizedString
+import org.opentripplanner.model.fare.FareOffer
+import org.opentripplanner.model.plan.Emission
+import org.opentripplanner.model.plan.Itinerary
 import org.opentripplanner.model.plan.Leg
+import org.opentripplanner.model.plan.Place
+import org.opentripplanner.model.plan.leg.LegCallTime
 import org.opentripplanner.model.plan.leg.StreetLeg
+import org.opentripplanner.routing.alertpatch.TransitAlert
 import org.opentripplanner.street.geometry.WgsCoordinate
 import org.opentripplanner.street.search.TraverseMode
 
@@ -124,6 +133,67 @@ class HubRoutingTest {
             .withEndTime(start.plusMinutes(1))
             .withDistanceMeters(distanceMeters)
             .build()
+    }
+
+    // A minimal `Leg` test double for `findHubSplit`'s own new short-leg-blind-spot test: that
+    // function only ever reads `isTransitLeg`, `distanceMeters()`, `startTime()`/`endTime()` (via
+    // `Itinerary`'s own leg-totals calculation, not `findHubSplit` itself) and `to().coordinate` --
+    // OTP's real `ScheduledTransitLeg` needs a `TripTimes`/`TripPattern`/board-alight-stop-index
+    // wired up just to construct, which this test has no need of; implementing `Leg` directly here
+    // keeps the fixture honest about exactly what `findHubSplit` depends on. Every other member
+    // below is an unused stub.
+    private class FakeTransitLeg(
+        private val legStartTime: ZonedDateTime,
+        private val legEndTime: ZonedDateTime,
+        private val toPlace: Place,
+    ) : Leg {
+        override fun isTransitLeg() = true
+        override fun hasSameMode(other: Leg) = other.isTransitLeg
+        override fun start(): LegCallTime? = null
+        override fun end(): LegCallTime? = null
+        override fun startTime(): ZonedDateTime = legStartTime
+        override fun endTime(): ZonedDateTime = legEndTime
+        override fun distanceMeters(): Double = 5_000.0
+        override fun from(): Place = toPlace
+        override fun to(): Place = toPlace
+        override fun legGeometry(): LineString? = null
+        override fun listTransitAlerts(): Set<TransitAlert> = emptySet()
+        override fun emissionPerPerson(): Emission? = null
+        override fun withEmissionPerPerson(emissionPerPerson: Emission?): Leg = this
+        override fun generalizedCost(): Int = 0
+        override fun fareOffers(): List<FareOffer> = emptyList()
+    }
+
+    @Test
+    fun `findHubSplit now detects a real transfer separated by a short sub-150m connector leg`() {
+        val hubs = HubCatalog.load()
+        val hub = checkNotNull(hubs.singleOrNull { it.name == "Aarhus Banegårdsplads" })
+
+        val start = ZonedDateTime.of(2026, 9, 13, 16, 0, 0, 0, ZoneId.of("Europe/Copenhagen"))
+        val alightLeg = FakeTransitLeg(
+            legStartTime = start,
+            legEndTime = start.plusMinutes(10),
+            toPlace = Place.normal(hub.lat, hub.lon, NonLocalizedString(hub.name)),
+        )
+        // Sub-150m non-transit connector -- the real short transfer hop this fix targets. Before
+        // the fix, `findHubSplit` walked `itinerary.legs()` directly, so this leg sitting between
+        // the two transit legs broke literal list-adjacency and the split was never found (it
+        // returned null for exactly this shape).
+        val connector = streetLeg(80.0)
+        val boardLeg = FakeTransitLeg(
+            legStartTime = start.plusMinutes(11),
+            legEndTime = start.plusMinutes(20),
+            toPlace = Place.normal(hub.lat + 0.05, hub.lon + 0.05, NonLocalizedString("Elsewhere")),
+        )
+
+        val itinerary = Itinerary.ofScheduledTransit(listOf(alightLeg, connector, boardLeg))
+            .withGeneralizedCost(Cost.costOfSeconds(600))
+            .build()
+
+        // Asserting a real, non-null hub match here is the real behavior change this fix makes --
+        // this exact itinerary shape would have returned null before it.
+        val split = HubRouting.findHubSplit(hubs, itinerary)
+        assertThat(split).isEqualTo(hub)
     }
 
     @Test

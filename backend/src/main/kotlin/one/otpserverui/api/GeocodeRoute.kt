@@ -79,6 +79,13 @@ class GooglePlacesGeocodeClient(private val httpClient: HttpClient, private val 
 fun Routing.geocodeRoute(client: GeocodeClient) {
     get("/geocode") {
         val query = call.request.queryParameters["q"] ?: ""
+        // An empty/missing/blank `q` has no real search to run -- match the spec's existing "no
+        // results" contract without ever calling Google for it (no quota spent, no network call to
+        // fail/time out on an input that was never going to produce a candidate).
+        if (query.isBlank()) {
+            call.respond(GeocodeResponse(emptyList()))
+            return@get
+        }
         call.respond(GeocodeResponse(client.search(query)))
     }
 }

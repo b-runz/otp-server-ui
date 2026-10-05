@@ -4,18 +4,23 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.format.DateTimeParseException
 import one.otpserverui.api.GeocodeClient
 import one.otpserverui.api.GooglePlacesGeocodeClient
+import one.otpserverui.api.SearchErrorResponse
 import one.otpserverui.api.dropMeOffRoutes
 import one.otpserverui.api.geocodeRoute
 import one.otpserverui.api.searchRoute
@@ -51,6 +56,32 @@ fun main() {
 
 fun Application.module(engine: RoutingEngine, hubs: List<TransitHub>, geocodeClient: GeocodeClient) {
     install(ContentNegotiation) { json() }
+    // Typed error responses for the exceptions this backend's handlers don't already catch
+    // locally: `/nearby-routes`'s `checkNotNull`/`.toDouble()` on its raw query params
+    // (NumberFormatException for a malformed number, IllegalStateException for a missing
+    // required one), `/connect`'s `Instant.parse(request.dateTimeIso)` (DateTimeParseException --
+    // matching `/search`'s own existing, locally-caught "invalid_request" contract for the same
+    // kind of bad input), and -- as a catch-all below those more specific handlers -- any
+    // exception a failed/timed-out/4xx-5xx call through `GooglePlacesGeocodeClient.search` throws
+    // (`/geocode` is the only handler left with no local catch of its own for a routing-engine- or
+    // request-shape exception, so this backstop is effectively scoped to it in practice). Ktor's
+    // `StatusPages` dispatch picks the most specific registered exception type for a given thrown
+    // exception's class hierarchy, not registration order, so the `Throwable` catch-all below
+    // never shadows the three specific handlers above it.
+    install(StatusPages) {
+        exception<NumberFormatException> { call, _ ->
+            call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("invalid_request"))
+        }
+        exception<IllegalStateException> { call, _ ->
+            call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("invalid_request"))
+        }
+        exception<DateTimeParseException> { call, _ ->
+            call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("invalid_request"))
+        }
+        exception<Throwable> { call, _ ->
+            call.respond(HttpStatusCode.BadGateway, SearchErrorResponse("geocode_unavailable"))
+        }
+    }
     routing {
         get("/health") { call.respondText("ok") }
         searchRoute(engine, hubs)

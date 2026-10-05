@@ -13,6 +13,7 @@ dependencies {
     implementation("io.ktor:ktor-server-core:3.0.3")
     implementation("io.ktor:ktor-server-netty:3.0.3")
     implementation("io.ktor:ktor-server-content-negotiation:3.0.3")
+    implementation("io.ktor:ktor-server-status-pages:3.0.3")
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.3")
     // GooglePlacesGeocodeClient's outbound HTTP calls to the real Places API (GeocodeRoute.kt).
     implementation("io.ktor:ktor-client-core:3.0.3")

@@ -46,13 +46,30 @@ object HubRouting {
     private const val MAX_ACCEPTABLE_DETOUR_SECONDS = 600.0 // 10 minutes
     private const val EARTH_RADIUS_METERS = 6_371_000.0
 
+    // A real station transfer always has a short street (bike/walk) leg between the two transit
+    // legs -- it's never literal list-adjacency. This matches `dropTinyLegs`'s own real threshold
+    // (`domain/ItineraryPostProcessing.kt`'s `MIN_LEG_METERS`, confirmed 150.0): a non-transit leg
+    // under this distance is treated as a connector hop, not a real separate leg, when deciding
+    // whether two transit legs are "adjacent" for hub-split purposes. This project has no
+    // `ItineraryPostProcessing.kt`/`dropTinyLegs` equivalent for `HubRouting` to run after, so the
+    // skip happens inline here instead.
+    private const val SHORT_LEG_THRESHOLD_METERS = 150.0
+
     /** Finds the first transit-to-transit transfer in the itinerary that happens near a
-     * cataloged hub, and returns that hub -- the substitution target for splitting the trip. */
+     * cataloged hub, and returns that hub -- the substitution target for splitting the trip.
+     *
+     * "Adjacent" tolerates a short (sub-150m) non-transit connector leg between the two transit
+     * legs (a real transfer's short walk/bike hop between stops) -- it filters those connector
+     * legs out entirely first, rather than keeping them in the list, so two transit legs with
+     * nothing but a short connector between them land next to each other in [transitAdjacentLegs]
+     * and the existing legs[i]/legs[i+1] pairwise walk still works unchanged. A non-transit leg at
+     * or above the threshold is kept (it's a real, separate leg, not a connector artifact), so it
+     * still correctly breaks adjacency between the transit legs on either side of it. */
     fun findHubSplit(hubs: List<TransitHub>, itinerary: Itinerary): TransitHub? {
-        val legs = itinerary.legs()
-        for (i in 0 until legs.size - 1) {
-            val alight = legs[i]
-            val board = legs[i + 1]
+        val transitAdjacentLegs = itinerary.legs().filter { it.isTransitLeg || it.distanceMeters() >= SHORT_LEG_THRESHOLD_METERS }
+        for (i in 0 until transitAdjacentLegs.size - 1) {
+            val alight = transitAdjacentLegs[i]
+            val board = transitAdjacentLegs[i + 1]
             if (!alight.isTransitLeg || !board.isTransitLeg) continue
             val alightCoordinate = alight.to().coordinate
             val nearest = hubs.minByOrNull {

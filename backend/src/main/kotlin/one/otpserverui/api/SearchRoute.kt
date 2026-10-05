@@ -89,6 +89,14 @@ fun Routing.searchRoute(engine: RoutingEngine, hubs: List<TransitHub>) {
             call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("unknown_mode"))
             return@post
         }
+        if (request.timeMode != "depart_at" && request.timeMode != "arrive_by") {
+            call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("invalid_time_mode"))
+            return@post
+        }
+        if (request.mode == "park_and_ride" && request.timeMode == "arrive_by") {
+            call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("unsupported_time_mode"))
+            return@post
+        }
 
         val origin = WgsCoordinate(request.originLat, request.originLon)
         val destination = WgsCoordinate(request.destinationLat, request.destinationLon)

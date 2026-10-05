@@ -107,6 +107,54 @@ class SearchRouteTest {
     }
 
     @Test
+    fun `POST search with park_and_ride and arrive_by returns a typed 400 error`() = runTest {
+        testApplication {
+            application {
+                install(ContentNegotiation) { json() }
+                routing { searchRoute(testEngine(), HubCatalog.load()) }
+            }
+            val response = client.post("/search") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    {"mode":"park_and_ride","timeMode":"arrive_by",
+                     "originLat":56.171798,"originLon":10.172087,
+                     "destinationLat":56.102216,"destinationLon":10.17293,
+                     "dateTimeIso":"2026-09-13T14:00:00Z","preferHubs":false}
+                    """.trimIndent()
+                )
+            }
+            assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+            val body = Json.decodeFromString<SearchErrorResponse>(response.bodyAsText())
+            assertThat(body.error).isEqualTo("unsupported_time_mode")
+        }
+    }
+
+    @Test
+    fun `POST search with an invalid timeMode returns a typed 400 error`() = runTest {
+        testApplication {
+            application {
+                install(ContentNegotiation) { json() }
+                routing { searchRoute(testEngine(), HubCatalog.load()) }
+            }
+            val response = client.post("/search") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    {"mode":"bring_bike","timeMode":"nonsense",
+                     "originLat":56.171798,"originLon":10.172087,
+                     "destinationLat":56.102216,"destinationLon":10.17293,
+                     "dateTimeIso":"2026-09-13T14:00:00Z","preferHubs":false}
+                    """.trimIndent()
+                )
+            }
+            assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+            val body = Json.decodeFromString<SearchErrorResponse>(response.bodyAsText())
+            assertThat(body.error).isEqualTo("invalid_time_mode")
+        }
+    }
+
+    @Test
     fun `POST search with an unparseable datetime returns a typed 400 error`() = runTest {
         testApplication {
             application {

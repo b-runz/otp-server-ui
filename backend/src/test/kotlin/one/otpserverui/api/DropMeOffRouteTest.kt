@@ -11,6 +11,8 @@ import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.response.respond
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlin.io.path.toPath
@@ -84,6 +86,28 @@ class DropMeOffRouteTest {
             assertThat(connectResponse.status).isEqualTo(HttpStatusCode.OK)
             val body = Json.decodeFromString<ConnectResponse>(connectResponse.bodyAsText())
             assertThat(body.itinerary.legs).isNotEmpty()
+        }
+    }
+
+    @Test
+    fun `GET nearby-routes with a malformed lat returns a typed 400, not a raw 500`() = runTest {
+        testApplication {
+            application {
+                install(ContentNegotiation) { json() }
+                // Mirrors Main.kt's real `StatusPages` install (Task 20): `.toDouble()` on a
+                // malformed `lat` throws `NumberFormatException`, which this maps to a typed 400
+                // instead of letting it propagate as an unhandled exception / raw 500.
+                install(StatusPages) {
+                    exception<NumberFormatException> { call, _ ->
+                        call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("invalid_request"))
+                    }
+                }
+                routing { dropMeOffRoutes(testEngine(), HubCatalog.load()) }
+            }
+            val response = client.get("/nearby-routes?lat=not-a-number&lon=10.172087")
+            assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+            val body = Json.decodeFromString<SearchErrorResponse>(response.bodyAsText())
+            assertThat(body.error).isEqualTo("invalid_request")
         }
     }
 }
