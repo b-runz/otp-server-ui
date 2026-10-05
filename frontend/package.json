@@ -1,0 +1,15 @@
+{
+  "name": "otp-server-ui-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build ./index.html --outdir dist",
+    "build:watch": "bun build ./index.html --outdir dist --watch",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "bun-types": "^1.4.2",
+    "happy-dom": "^20.14.5",
+    "typescript": "^7.0.2"
+  }
+}
