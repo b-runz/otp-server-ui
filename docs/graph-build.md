@@ -366,3 +366,16 @@ A full production Denmark-wide graph-building flow needs real `build-config.json
 probably belongs back in the real `application` module's own Maven build once this project is far
 enough along to justify paying the GCP-BOM dependency cost once, in CI/deployment rather than per
 developer machine.
+
+## Running the full app locally
+
+1. Build the frontend once (rebuild after any frontend change):
+   `cd frontend && bun install && bun run build`
+2. Build a real graph file (see the rest of this document).
+3. Start the backend, which also serves the built frontend bundle:
+   `GRAPH_FILE_PATH=<path> GOOGLE_PLACES_API_KEY=<key> ./gradlew :backend:run`
+4. Open `http://localhost:8080/`.
+
+`FRONTEND_DIST_PATH` defaults to `frontend/dist` (relative to the working
+directory the JVM process is started from) and only needs to be set
+explicitly if `frontend/dist` isn't there — see `Main.kt`'s `module()`.
