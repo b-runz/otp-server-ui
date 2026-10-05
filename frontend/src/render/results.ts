@@ -6,6 +6,15 @@ import {
 
 const TIME_FORMATTER = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function legRowHtml(leg: LegDto): string {
   const routeLabel = leg.routeShortName ? formatRouteLabel(leg.mode, leg.routeShortName) : null;
   const distanceDuration = formatLegDistanceDuration(leg.distanceMeters, leg.durationSeconds);
@@ -14,7 +23,7 @@ function legRowHtml(leg: LegDto): string {
   return `
     <li class="leg">
       <span class="leg-icon" aria-hidden="true">${iconForMode(leg.mode)}</span>
-      <span class="leg-headline">${leg.fromName ?? "?"} → ${leg.toName ?? "?"}</span>
+      <span class="leg-headline">${escapeHtml(leg.fromName ?? "?")} → ${escapeHtml(leg.toName ?? "?")}</span>
       ${subtitle ? `<span class="leg-subtitle">${subtitle}</span>` : ""}
       <a class="leg-maps-link" href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Maps</a>
     </li>
@@ -71,7 +80,7 @@ export function renderResults(root: HTMLElement, itineraries: ItineraryDto[] | n
     root.innerHTML = `<p class="no-results">No itineraries found.</p>`;
     return;
   }
-  const noticeHtml = notice ? `<p class="hub-notice">via ${notice}</p>` : "";
+  const noticeHtml = notice ? `<p class="hub-notice">via ${escapeHtml(notice)}</p>` : "";
   root.innerHTML = `${noticeHtml}<ul class="itineraries">${itineraries.map(itineraryCardHtml).join("")}</ul>`;
   wireDetailsToggles(root);
 }

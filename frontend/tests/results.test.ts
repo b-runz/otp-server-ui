@@ -76,3 +76,21 @@ test("an itinerary card's legs start collapsed and expand on clicking Details", 
   expect(legsList.hidden).toBe(true);
   expect(detailsButton.textContent).toBe("Details ▸");
 });
+
+test("HTML special characters in place names and hub notices are escaped, not rendered as markup", () => {
+  const root = freshRoot();
+  const itineraryWithSpecialChars: ItineraryDto = {
+    legs: [
+      { mode: "WALK", distanceMeters: 100, durationSeconds: 60, fromLat: 0, fromLon: 0, toLat: 1, toLon: 1, fromName: "Origin <script>", toName: "Stop & Away", routeShortName: null, departureEpochSecond: 1_000_000_000 },
+    ],
+    exceedsBikeLimit: false,
+    hasLongWalkEgress: false,
+  };
+  renderResults(root, [itineraryWithSpecialChars], "Hub <Alert>");
+  expect(root.innerHTML).not.toContain("<script>");
+  expect(root.innerHTML).toContain("&lt;script&gt;");
+  expect(root.innerHTML).toContain("&amp;");
+  expect(root.innerHTML).toContain("&lt;Alert&gt;");
+  expect(root.textContent).toContain("Origin <script>");
+  expect(root.textContent).toContain("Stop & Away");
+});
