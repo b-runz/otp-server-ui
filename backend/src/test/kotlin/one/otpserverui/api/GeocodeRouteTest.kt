@@ -22,13 +22,22 @@ class GeocodeRouteTest {
         testApplication {
             application {
                 install(ContentNegotiation) { json() }
-                routing { geocodeRoute(FakeGeocodeClient(listOf(GeocodeCandidate("Langelandsgade, Aarhus, Danmark", 56.1638, 10.1979)))) }
+                routing {
+                    geocodeRoute(
+                        FakeGeocodeClient(
+                            listOf(GeocodeCandidate("place123", "Langelandsgade, Aarhus, Danmark", 56.1638, 10.1979, isStreet = true))
+                        )
+                    )
+                }
             }
             val response = client.get("/geocode?q=Langelandsg")
             assertThat(response.status).isEqualTo(HttpStatusCode.OK)
             val body = Json.decodeFromString<GeocodeResponse>(response.bodyAsText())
             assertThat(body.candidates).hasSize(1)
-            assertThat(body.candidates.first().label).isEqualTo("Langelandsgade, Aarhus, Danmark")
+            val candidate = body.candidates.first()
+            assertThat(candidate.label).isEqualTo("Langelandsgade, Aarhus, Danmark")
+            assertThat(candidate.placeId).isEqualTo("place123")
+            assertThat(candidate.isStreet).isTrue()
         }
     }
 
@@ -47,7 +56,7 @@ class GeocodeRouteTest {
 
     @Test
     fun `GET geocode with an empty q returns an empty candidates array with zero calls to the client`() = runTest {
-        val countingClient = CountingGeocodeClient(listOf(GeocodeCandidate("unused", 0.0, 0.0)))
+        val countingClient = CountingGeocodeClient(listOf(GeocodeCandidate("unused-id", "unused", 0.0, 0.0, isStreet = false)))
         testApplication {
             application {
                 install(ContentNegotiation) { json() }
@@ -63,7 +72,7 @@ class GeocodeRouteTest {
 
     @Test
     fun `GET geocode with a missing q returns an empty candidates array with zero calls to the client`() = runTest {
-        val countingClient = CountingGeocodeClient(listOf(GeocodeCandidate("unused", 0.0, 0.0)))
+        val countingClient = CountingGeocodeClient(listOf(GeocodeCandidate("unused-id", "unused", 0.0, 0.0, isStreet = false)))
         testApplication {
             application {
                 install(ContentNegotiation) { json() }

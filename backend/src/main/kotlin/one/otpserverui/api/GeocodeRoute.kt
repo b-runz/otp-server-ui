@@ -15,7 +15,7 @@ import io.ktor.server.routing.get
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class GeocodeCandidate(val label: String, val lat: Double, val lon: Double)
+data class GeocodeCandidate(val placeId: String, val label: String, val lat: Double, val lon: Double, val isStreet: Boolean)
 
 @Serializable
 data class GeocodeResponse(val candidates: List<GeocodeCandidate>)
@@ -34,7 +34,7 @@ private data class AutocompleteResponse(val suggestions: List<SuggestionDto> = e
 private data class SuggestionDto(val placePrediction: PlacePredictionDto? = null)
 
 @kotlinx.serialization.Serializable
-private data class PlacePredictionDto(val placeId: String, val text: FormattedTextDto)
+private data class PlacePredictionDto(val placeId: String, val text: FormattedTextDto, val types: List<String> = emptyList())
 
 @kotlinx.serialization.Serializable
 private data class FormattedTextDto(val text: String)
@@ -72,7 +72,13 @@ class GooglePlacesGeocodeClient(private val httpClient: HttpClient, private val 
                 header("X-Goog-Api-Key", apiKey)
                 header("X-Goog-FieldMask", "location")
             }.body<PlaceDetailsResponse>()
-            GeocodeCandidate(prediction.text.text, details.location.latitude, details.location.longitude)
+            GeocodeCandidate(
+                placeId = prediction.placeId,
+                label = prediction.text.text,
+                lat = details.location.latitude,
+                lon = details.location.longitude,
+                isStreet = prediction.types.contains("route"),
+            )
         }
     }
 }
