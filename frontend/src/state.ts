@@ -79,7 +79,11 @@ export function setDateTimeIso(state: AppState, iso: string): AppState {
 }
 
 function clearResults(state: AppState): AppState {
-  return { ...state, itineraries: null, notice: null, error: null, searched: false };
+  return {
+    ...state,
+    itineraries: null, notice: null, error: null, searched: false,
+    nearbyRoutes: null, nearbyRoutesError: null, connectResults: {}, connectErrors: {},
+  };
 }
 
 export function swapFromTo(state: AppState): AppState {

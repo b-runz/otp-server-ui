@@ -20,6 +20,12 @@ const TIME_MODE_OPTIONS: Array<[TimeMode, string]> = [
   ["arrive_by", "Arrive by"],
 ];
 
+function toDateTimeLocalValue(iso: string): string {
+  const date = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function renderToggle<Value extends string>(
   fieldset: HTMLElement, options: Array<[Value, string]>, selected: Value, onSelect: (value: Value) => void,
 ): void {
@@ -47,12 +53,20 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   if (toInput.value !== state.to.query) toInput.value = state.to.query;
   preferHubsCheckbox.checked = state.preferHubs;
 
+  const expectedDateTimeValue = toDateTimeLocalValue(state.dateTimeIso);
+  if (dateTimeInput.value !== expectedDateTimeValue) dateTimeInput.value = expectedDateTimeValue;
+
   renderToggle(modeToggle, SEARCH_MODE_OPTIONS, state.searchMode, handlers.onSearchModeChange);
   renderToggle(timeToggle, TIME_MODE_OPTIONS, state.timeMode, handlers.onTimeModeChange);
 
   fromInput.oninput = () => handlers.onFromQueryChanged(fromInput.value);
   toInput.oninput = () => handlers.onToQueryChanged(toInput.value);
   swapButton.onclick = () => handlers.onSwap();
-  dateTimeInput.onchange = () => handlers.onDateTimeChanged(new Date(dateTimeInput.value).toISOString());
+  dateTimeInput.onchange = () => {
+    if (!dateTimeInput.value) return;
+    const date = new Date(dateTimeInput.value);
+    if (Number.isNaN(date.getTime())) return;
+    handlers.onDateTimeChanged(date.toISOString());
+  };
   preferHubsCheckbox.onchange = () => handlers.onPreferHubsChange(preferHubsCheckbox.checked);
 }

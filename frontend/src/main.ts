@@ -24,6 +24,12 @@ export function mountApp(root: HTMLElement): void {
     recents: loadRecents(),
   };
 
+  // Request-id guards: a resubmitted search/nearby-routes/connect request must never let a
+  // stale in-flight response overwrite a later, fresher result (plan's own Review Focus item).
+  let searchRequestId = 0;
+  let nearbyRoutesRequestId = 0;
+  const connectRequestIds = new Map<string, number>();
+
   function render(): void {
     renderForm(root, state, {
       onSearchModeChange: (mode) => update(setSearchMode(state, mode)),
@@ -68,7 +74,12 @@ export function mountApp(root: HTMLElement): void {
   const autocomplete = createAutocompleteController({
     geocode: async (query, signal) => {
       const result = await geocode(query, signal);
-      return isApiError(result) ? [] : result.candidates;
+      if (isApiError(result)) {
+        update({ ...state, error: messageForError(result) });
+        return [];
+      }
+      if (state.error != null) update({ ...state, error: null });
+      return result.candidates;
     },
     onSuggestions: (field, suggestions) => update(setFieldSuggestions(state, field, suggestions)),
   });
@@ -109,13 +120,19 @@ export function mountApp(root: HTMLElement): void {
   }
 
   async function onSelectRoute(route: NearbyRouteDto): Promise<void> {
-    if (state.from.resolved == null || state.to.resolved == null) return;
+    if (state.from.resolved == null || state.to.resolved == null) {
+      update({ ...state, error: "Please select an address from the suggestions list first." });
+      return;
+    }
+    const requestId = (connectRequestIds.get(route.routeGtfsId) ?? 0) + 1;
+    connectRequestIds.set(route.routeGtfsId, requestId);
     const result = await connect({
       originLat: state.from.resolved.lat, originLon: state.from.resolved.lon,
       destinationLat: state.to.resolved.lat, destinationLon: state.to.resolved.lon,
       routeGtfsId: route.routeGtfsId, routeStopIds: route.stopIds,
       timeMode: state.timeMode, dateTimeIso: state.dateTimeIso, preferHubs: state.preferHubs,
     });
+    if (requestId !== connectRequestIds.get(route.routeGtfsId)) return; // a newer connect request superseded this one
     if (isApiError(result)) {
       update(setConnectError(state, route.routeGtfsId, messageForError(result)));
     } else {
@@ -125,27 +142,49 @@ export function mountApp(root: HTMLElement): void {
 
   root.querySelector<HTMLFormElement>("#trip-form")!.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (state.from.resolved == null || state.to.resolved == null) return;
-    const result = await search({
-      mode: state.searchMode, timeMode: state.timeMode,
-      originLat: state.from.resolved.lat, originLon: state.from.resolved.lon,
-      destinationLat: state.to.resolved.lat, destinationLon: state.to.resolved.lon,
-      dateTimeIso: state.dateTimeIso, preferHubs: state.preferHubs,
-    });
-    if (isApiError(result)) {
-      update(setError(state, messageForError(result)));
-    } else {
-      update(setItineraries(state, result.itineraries, result.notice));
+    if (state.from.resolved == null || state.to.resolved == null) {
+      update({ ...state, error: "Please select an address from the suggestions list first." });
+      return;
+    }
+    const requestId = ++searchRequestId;
+    const searchButton = root.querySelector<HTMLButtonElement>("#search-button")!;
+    searchButton.disabled = true;
+    try {
+      const result = await search({
+        mode: state.searchMode, timeMode: state.timeMode,
+        originLat: state.from.resolved.lat, originLon: state.from.resolved.lon,
+        destinationLat: state.to.resolved.lat, destinationLon: state.to.resolved.lon,
+        dateTimeIso: state.dateTimeIso, preferHubs: state.preferHubs,
+      });
+      if (requestId !== searchRequestId) return; // a newer search superseded this one
+      if (isApiError(result)) {
+        update(setError(state, messageForError(result)));
+      } else {
+        update(setItineraries(state, result.itineraries, result.notice));
+      }
+    } finally {
+      if (requestId === searchRequestId) searchButton.disabled = false;
     }
   });
 
   root.querySelector<HTMLButtonElement>("#drop-me-off-button")!.addEventListener("click", async () => {
-    if (state.to.resolved == null) return;
-    const result = await nearbyRoutes(state.to.resolved.lat, state.to.resolved.lon);
-    if (isApiError(result)) {
-      update(setNearbyRoutesError(state, messageForError(result)));
-    } else {
-      update(setNearbyRoutes(state, result.routes));
+    if (state.to.resolved == null) {
+      update({ ...state, error: "Please select an address from the suggestions list first." });
+      return;
+    }
+    const requestId = ++nearbyRoutesRequestId;
+    const dropMeOffButton = root.querySelector<HTMLButtonElement>("#drop-me-off-button")!;
+    dropMeOffButton.disabled = true;
+    try {
+      const result = await nearbyRoutes(state.to.resolved.lat, state.to.resolved.lon);
+      if (requestId !== nearbyRoutesRequestId) return; // a newer request superseded this one
+      if (isApiError(result)) {
+        update(setNearbyRoutesError(state, messageForError(result)));
+      } else {
+        update(setNearbyRoutes(state, result.routes));
+      }
+    } finally {
+      if (requestId === nearbyRoutesRequestId) dropMeOffButton.disabled = false;
     }
   });
 

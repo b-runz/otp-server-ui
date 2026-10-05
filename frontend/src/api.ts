@@ -3,37 +3,37 @@ import type {
   NearbyRoutesResponse, GeocodeResponse, ApiError,
 } from "./types";
 
-async function parseJsonOrError<T>(response: Response): Promise<T | ApiError> {
-  const body = await response.json();
-  return body as T | ApiError;
+async function safeFetchJson<T>(input: string, init?: RequestInit): Promise<T | ApiError> {
+  try {
+    const response = await fetch(input, init);
+    return (await response.json()) as T | ApiError;
+  } catch {
+    return { error: "internal_error" };
+  }
 }
 
 export async function search(request: SearchRequest): Promise<SearchResponse | ApiError> {
-  const response = await fetch("/search", {
+  return safeFetchJson<SearchResponse>("/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
   });
-  return parseJsonOrError<SearchResponse>(response);
 }
 
 export async function connect(request: ConnectRequest): Promise<ConnectResponse | ApiError> {
-  const response = await fetch("/connect", {
+  return safeFetchJson<ConnectResponse>("/connect", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
   });
-  return parseJsonOrError<ConnectResponse>(response);
 }
 
 export async function nearbyRoutes(lat: number, lon: number, radiusMeters?: number): Promise<NearbyRoutesResponse | ApiError> {
   const params = new URLSearchParams({ lat: String(lat), lon: String(lon) });
   if (radiusMeters != null) params.set("radiusMeters", String(radiusMeters));
-  const response = await fetch(`/nearby-routes?${params.toString()}`);
-  return parseJsonOrError<NearbyRoutesResponse>(response);
+  return safeFetchJson<NearbyRoutesResponse>(`/nearby-routes?${params.toString()}`);
 }
 
 export async function geocode(query: string, signal?: AbortSignal): Promise<GeocodeResponse | ApiError> {
-  const response = await fetch(`/geocode?q=${encodeURIComponent(query)}`, { signal });
-  return parseJsonOrError<GeocodeResponse>(response);
+  return safeFetchJson<GeocodeResponse>(`/geocode?q=${encodeURIComponent(query)}`, { signal });
 }
