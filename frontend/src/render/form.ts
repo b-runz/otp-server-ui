@@ -1,4 +1,5 @@
 import type { AppState, SearchMode, TimeMode } from "../state";
+import type { SavedPlace } from "../storage";
 
 export interface FormHandlers {
   onSearchModeChange: (mode: SearchMode) => void;
@@ -8,6 +9,9 @@ export interface FormHandlers {
   onFromQueryChanged: (query: string) => void;
   onToQueryChanged: (query: string) => void;
   onDateTimeChanged: (dateTimeIso: string) => void;
+  onToggleFavorite: (field: "from" | "to") => void;
+  onFromFocusChanged: (focused: boolean) => void;
+  onToFocusChanged: (focused: boolean) => void;
 }
 
 const SEARCH_MODE_OPTIONS: Array<[SearchMode, string]> = [
@@ -24,6 +28,19 @@ function toDateTimeLocalValue(iso: string): string {
   const date = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function renderFavoriteStar(
+  button: HTMLButtonElement,
+  resolved: { placeId: string } | null,
+  favorites: SavedPlace[],
+  onToggle: () => void,
+): void {
+  button.hidden = resolved == null;
+  if (resolved != null) {
+    button.textContent = favorites.some((p) => p.placeId === resolved.placeId) ? "★" : "☆";
+  }
+  button.onclick = onToggle;
 }
 
 function renderToggle<Value extends string>(
@@ -48,9 +65,13 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   const swapButton = root.querySelector<HTMLButtonElement>("#swap-button")!;
   const dateTimeInput = root.querySelector<HTMLInputElement>("#datetime-input")!;
   const preferHubsCheckbox = root.querySelector<HTMLInputElement>("#prefer-hubs-checkbox")!;
+  const fromFavoriteStar = root.querySelector<HTMLButtonElement>("#from-favorite-star")!;
+  const toFavoriteStar = root.querySelector<HTMLButtonElement>("#to-favorite-star")!;
 
   if (fromInput.value !== state.from.query) fromInput.value = state.from.query;
   if (toInput.value !== state.to.query) toInput.value = state.to.query;
+  renderFavoriteStar(fromFavoriteStar, state.from.resolved, state.favorites, () => handlers.onToggleFavorite("from"));
+  renderFavoriteStar(toFavoriteStar, state.to.resolved, state.favorites, () => handlers.onToggleFavorite("to"));
   preferHubsCheckbox.checked = state.preferHubs;
 
   const expectedDateTimeValue = toDateTimeLocalValue(state.dateTimeIso);
@@ -61,6 +82,10 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
 
   fromInput.oninput = () => handlers.onFromQueryChanged(fromInput.value);
   toInput.oninput = () => handlers.onToQueryChanged(toInput.value);
+  fromInput.onfocus = () => handlers.onFromFocusChanged(true);
+  fromInput.onblur = () => handlers.onFromFocusChanged(false);
+  toInput.onfocus = () => handlers.onToFocusChanged(true);
+  toInput.onblur = () => handlers.onToFocusChanged(false);
   swapButton.onclick = () => handlers.onSwap();
   dateTimeInput.onchange = () => {
     if (!dateTimeInput.value) return;

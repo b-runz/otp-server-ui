@@ -9,7 +9,7 @@ import {
 import { createAutocompleteController } from "./addressAutocomplete";
 import {
   loadFavorites, saveFavorites, loadRecents, saveRecents,
-  rememberRecent, incrementRank, favoritesSortedForPicker,
+  rememberRecent, incrementRank, favoritesSortedForPicker, toggleFavorite,
 } from "./storage";
 import { renderForm } from "./render/form";
 import { renderSuggestions } from "./render/autocomplete";
@@ -30,6 +30,30 @@ export function mountApp(root: HTMLElement): void {
   let nearbyRoutesRequestId = 0;
   const connectRequestIds = new Map<string, number>();
 
+  // Per-field focus state for the suggestions dropdown -- pure UI state, not part of AppState,
+  // same pattern as the itinerary details-toggle. Blur is delayed so a click on a dropdown row
+  // (which blurs the input) still has time to register as a real selection first.
+  const fieldFocused: Record<"from" | "to", boolean> = { from: false, to: false };
+  const blurTimers: Record<"from" | "to", ReturnType<typeof setTimeout> | null> = { from: null, to: null };
+
+  function onFieldFocusChanged(field: "from" | "to", focused: boolean): void {
+    const pendingBlur = blurTimers[field];
+    if (pendingBlur != null) {
+      clearTimeout(pendingBlur);
+      blurTimers[field] = null;
+    }
+    if (focused) {
+      fieldFocused[field] = true;
+      render();
+    } else {
+      blurTimers[field] = setTimeout(() => {
+        fieldFocused[field] = false;
+        blurTimers[field] = null;
+        render();
+      }, 150);
+    }
+  }
+
   function render(): void {
     renderForm(root, state, {
       onSearchModeChange: (mode) => update(setSearchMode(state, mode)),
@@ -39,6 +63,9 @@ export function mountApp(root: HTMLElement): void {
       onFromQueryChanged: (query) => onFieldQueryChanged("from", query),
       onToQueryChanged: (query) => onFieldQueryChanged("to", query),
       onDateTimeChanged: (iso) => update(setDateTimeIso(state, iso)),
+      onToggleFavorite: (field) => onToggleFavorite(field),
+      onFromFocusChanged: (focused) => onFieldFocusChanged("from", focused),
+      onToFocusChanged: (focused) => onFieldFocusChanged("to", focused),
     });
 
     const fromList = root.querySelector<HTMLUListElement>("#from-suggestions")!;
@@ -46,13 +73,13 @@ export function mountApp(root: HTMLElement): void {
       onSelectSuggestion: (candidate) => onSelectSuggestion("from", candidate),
       onSelectSaved: (place) => onSelectSaved("from", place),
       onAddHouseNumber: (candidate) => onAddHouseNumber("from", candidate),
-    });
+    }, fieldFocused.from);
     const toList = root.querySelector<HTMLUListElement>("#to-suggestions")!;
     renderSuggestions(toList, state.to.suggestions, { favorites: favoritesSortedForPicker(state.favorites), recents: state.recents }, {
       onSelectSuggestion: (candidate) => onSelectSuggestion("to", candidate),
       onSelectSaved: (place) => onSelectSaved("to", place),
       onAddHouseNumber: (candidate) => onAddHouseNumber("to", candidate),
-    });
+    }, fieldFocused.to);
 
     const errorBanner = root.querySelector<HTMLElement>("#error-banner")!;
     errorBanner.hidden = state.error == null;
@@ -115,6 +142,15 @@ export function mountApp(root: HTMLElement): void {
   function onSelectSaved(field: "from" | "to", place: { placeId: string; label: string; lat: number; lon: number }): void {
     update(resolveField(state, field, { ...place, isStreet: false }));
     const { favorites, recents } = incrementRank(state.favorites, state.recents, place.placeId);
+    saveFavorites(favorites);
+    saveRecents(recents);
+    update({ ...state, favorites, recents });
+  }
+
+  function onToggleFavorite(field: "from" | "to"): void {
+    const resolved = state[field].resolved;
+    if (resolved == null) return;
+    const { favorites, recents } = toggleFavorite(state.favorites, state.recents, resolved.placeId, resolved.label, resolved.lat, resolved.lon);
     saveFavorites(favorites);
     saveRecents(recents);
     update({ ...state, favorites, recents });

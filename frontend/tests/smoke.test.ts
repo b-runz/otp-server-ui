@@ -5,9 +5,9 @@ function freshDocument(): HTMLElement {
   document.body.innerHTML = `
     <main id="app">
       <form id="trip-form">
-        <div class="address-field"><input id="from-input" /><ul id="from-suggestions" class="suggestions" hidden></ul></div>
+        <div class="address-field"><input id="from-input" /><button type="button" id="from-favorite-star" hidden></button><ul id="from-suggestions" class="suggestions" hidden></ul></div>
         <button type="button" id="swap-button"></button>
-        <div class="address-field"><input id="to-input" /><ul id="to-suggestions" class="suggestions" hidden></ul></div>
+        <div class="address-field"><input id="to-input" /><button type="button" id="to-favorite-star" hidden></button><ul id="to-suggestions" class="suggestions" hidden></ul></div>
         <fieldset id="mode-toggle"></fieldset>
         <fieldset id="time-toggle"></fieldset>
         <input id="datetime-input" type="datetime-local" />
@@ -72,5 +72,36 @@ test("form fill -> submit -> result rendered", async () => {
     expect(root.querySelector("#results")!.textContent).toContain("Origin → Destination");
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("recents dropdown only shows while focused, and a click on a recent still registers despite the blur delay", async () => {
+  localStorage.setItem(
+    "otp-server-ui:recents",
+    JSON.stringify([{ placeId: "r1", label: "Recent Place", lat: 1, lon: 2, rank: 0 }]),
+  );
+  try {
+    const root = freshDocument();
+    mountApp(root);
+
+    const fromInput = root.querySelector<HTMLInputElement>("#from-input")!;
+    const fromList = root.querySelector<HTMLUListElement>("#from-suggestions")!;
+
+    expect(fromList.hidden).toBe(true); // not focused yet, even though a recent exists
+
+    fromInput.dispatchEvent(new Event("focus", { bubbles: true }));
+    expect(fromList.hidden).toBe(false);
+    const recentRow = fromList.querySelector<HTMLElement>(".saved-place-row")!;
+    expect(recentRow.textContent).toContain("Recent Place");
+
+    fromInput.dispatchEvent(new Event("blur", { bubbles: true }));
+    // Blur is delayed -- a click arriving in this window must still register as a real selection.
+    recentRow.dispatchEvent(new Event("click", { bubbles: true }));
+    expect(fromInput.value).toBe("Recent Place");
+
+    await new Promise((r) => setTimeout(r, 250));
+    expect(fromList.hidden).toBe(true);
+  } finally {
+    localStorage.clear();
   }
 });

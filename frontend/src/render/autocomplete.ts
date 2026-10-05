@@ -12,9 +12,11 @@ export function renderSuggestions(
   suggestions: GeocodeCandidate[],
   favoritesAndRecents: { favorites: SavedPlace[]; recents: SavedPlace[] },
   handlers: AutocompleteHandlers,
+  focused: boolean,
 ): void {
   listEl.innerHTML = "";
-  listEl.hidden = suggestions.length === 0 && favoritesAndRecents.favorites.length === 0 && favoritesAndRecents.recents.length === 0;
+  const hasContent = suggestions.length > 0 || favoritesAndRecents.favorites.length > 0 || favoritesAndRecents.recents.length > 0;
+  listEl.hidden = !focused || !hasContent;
 
   for (const suggestion of suggestions) {
     const row = document.createElement("li");
