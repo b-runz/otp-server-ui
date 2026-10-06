@@ -1,0 +1,19 @@
+otp.brj.one {
+  rate_limit {
+    zone main {
+      key    {client_ip}
+      events 120
+      window 1m
+    }
+  }
+
+  handle_errors 429 {
+    respond 403
+  }
+
+  @authorized header X-Auth-Token "${otp_auth_token}"
+  handle @authorized {
+    reverse_proxy 127.0.0.1:8081
+  }
+  respond 403
+}
