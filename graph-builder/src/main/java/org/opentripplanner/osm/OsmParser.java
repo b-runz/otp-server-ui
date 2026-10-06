@@ -1,0 +1,206 @@
+package org.opentripplanner.osm;
+
+import crosby.binary.BinaryParser;
+import crosby.binary.Osmformat;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import org.opentripplanner.graph_builder.module.osm.storage.OsmDatabase;
+import org.opentripplanner.osm.model.OsmMemberType;
+import org.opentripplanner.osm.model.OsmNode;
+import org.opentripplanner.osm.model.OsmNodeBuilder;
+import org.opentripplanner.osm.model.OsmRelation;
+import org.opentripplanner.osm.model.OsmRelationBuilder;
+import org.opentripplanner.osm.model.OsmRelationMember;
+import org.opentripplanner.osm.model.OsmWay;
+import org.opentripplanner.osm.model.OsmWayBuilder;
+
+/**
+ * Parser for the OpenStreetMap PBF Format.
+ *
+ */
+class OsmParser extends BinaryParser {
+
+  private final OsmDatabase osmdb;
+  private final Map<String, String> stringTable = new HashMap<>();
+  private final DefaultOsmProvider provider;
+  private OsmParserPhase parsePhase;
+
+  public OsmParser(OsmDatabase osmdb, DefaultOsmProvider provider) {
+    this.osmdb = Objects.requireNonNull(osmdb);
+    this.provider = Objects.requireNonNull(provider);
+  }
+
+  // The strings are already being pulled from a string table in the PBF file,
+  // but there appears to be a separate string table per 8k-entry PBF file block.
+  // String.intern grinds to a halt on large PBF files (as it did on GTFS import), so
+  // we implement our own.
+  public String internalize(String s) {
+    String fromTable = stringTable.get(s);
+    if (fromTable == null) {
+      stringTable.put(s, s);
+      return s;
+    }
+    return fromTable;
+  }
+
+  @Override
+  public void complete() {
+    // Jump in circles
+  }
+
+  /**
+   * Set the phase to be parsed
+   */
+  public void setPhase(OsmParserPhase phase) {
+    this.parsePhase = phase;
+  }
+
+  @Override
+  protected void parseRelations(List<Osmformat.Relation> rels) {
+    if (parsePhase != OsmParserPhase.Relations) {
+      return;
+    }
+
+    for (Osmformat.Relation i : rels) {
+      OsmRelationBuilder builder = OsmRelation.of().withId(i.getId()).withOsmProvider(provider);
+
+      for (int j = 0; j < i.getKeysCount(); j++) {
+        String key = internalize(getStringById(i.getKeys(j)));
+        String value = internalize(getStringById(i.getVals(j)));
+        builder.addTag(key, value);
+      }
+
+      long lastMid = 0;
+      for (int j = 0; j < i.getMemidsCount(); j++) {
+        OsmRelationMember relMember = new OsmRelationMember();
+        long mid = lastMid + i.getMemids(j);
+
+        relMember.setRef(mid);
+        lastMid = mid;
+
+        relMember.setRole(internalize(getStringById(i.getRolesSid(j))));
+
+        if (i.getTypes(j) == Osmformat.Relation.MemberType.NODE) {
+          relMember.setType(OsmMemberType.NODE);
+        } else if (i.getTypes(j) == Osmformat.Relation.MemberType.WAY) {
+          relMember.setType(OsmMemberType.WAY);
+        } else if (i.getTypes(j) == Osmformat.Relation.MemberType.RELATION) {
+          relMember.setType(OsmMemberType.RELATION);
+        } else {
+          // TODO; Illegal file?
+          assert false;
+        }
+
+        builder.addMember(relMember);
+      }
+
+      osmdb.addRelation(builder.build());
+    }
+  }
+
+  @Override
+  protected void parseDense(Osmformat.DenseNodes nodes) {
+    long lastId = 0;
+    long lastLat = 0;
+    long lastLon = 0;
+    // Index into the keysvals array.
+    int j = 0;
+
+    if (parsePhase != OsmParserPhase.Nodes) {
+      return;
+    }
+
+    // because it's a hot loop we don't use the builder
+    for (int i = 0; i < nodes.getIdCount(); i++) {
+      long lat = nodes.getLat(i) + lastLat;
+      lastLat = lat;
+      long lon = nodes.getLon(i) + lastLon;
+      lastLon = lon;
+      long id = nodes.getId(i) + lastId;
+      lastId = id;
+      double latf = parseLat(lat);
+      double lonf = parseLon(lon);
+
+      var builder = OsmNode.of().withId(id).withOsmProvider(provider).withLatLon(latf, lonf);
+      // If empty, assume that nothing here has keys or vals.
+      if (nodes.getKeysValsCount() > 0) {
+        while (nodes.getKeysVals(j) != 0) {
+          int keyid = nodes.getKeysVals(j++);
+          int valid = nodes.getKeysVals(j++);
+
+          String key = internalize(getStringById(keyid));
+          String value = internalize(getStringById(valid));
+          builder.withTag(key, value);
+        }
+        // Skip over the '0' delimiter.
+        j++;
+      }
+
+      osmdb.addNode(builder.build());
+    }
+  }
+
+  @Override
+  protected void parseNodes(List<Osmformat.Node> nodes) {
+    if (parsePhase != OsmParserPhase.Nodes) {
+      return;
+    }
+
+    for (Osmformat.Node i : nodes) {
+      OsmNodeBuilder builder = OsmNode.of()
+        .withId(i.getId())
+        .withOsmProvider(provider)
+        .withLatLon(parseLat(i.getLat()), parseLon(i.getLon()));
+
+      for (int j = 0; j < i.getKeysCount(); j++) {
+        String key = internalize(getStringById(i.getKeys(j)));
+        String value = internalize(getStringById(i.getVals(j)));
+        builder.withTag(key, value);
+      }
+
+      osmdb.addNode(builder.build());
+    }
+  }
+
+  @Override
+  protected void parseWays(List<Osmformat.Way> ways) {
+    if (parsePhase != OsmParserPhase.Ways) {
+      return;
+    }
+
+    for (Osmformat.Way i : ways) {
+      OsmWayBuilder builder = OsmWay.of().withId(i.getId()).withOsmProvider(provider);
+
+      for (int j = 0; j < i.getKeysCount(); j++) {
+        String key = internalize(getStringById(i.getKeys(j)));
+        String value = internalize(getStringById(i.getVals(j)));
+        builder.withTag(key, value);
+      }
+
+      long lastId = 0;
+      for (long j : i.getRefsList()) {
+        builder.addNodeRef(j + lastId);
+        lastId = j + lastId;
+      }
+
+      osmdb.addWay(builder.build());
+    }
+  }
+
+  @Override
+  public void parse(Osmformat.HeaderBlock block) {
+    for (String s : block.getRequiredFeaturesList()) {
+      if (s.equals("OsmSchema-V0.6")) {
+        // We can parse this.
+        continue;
+      }
+      if (s.equals("DenseNodes")) {
+        // We can parse this.
+        continue;
+      }
+      throw new IllegalStateException("File requires unknown feature: " + s);
+    }
+  }
+}

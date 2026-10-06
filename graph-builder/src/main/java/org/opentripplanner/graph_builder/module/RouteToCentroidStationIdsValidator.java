@@ -1,0 +1,50 @@
+package org.opentripplanner.graph_builder.module;
+
+import java.util.Collection;
+import java.util.stream.Collectors;
+import org.opentripplanner.core.model.id.FeedScopedId;
+import org.opentripplanner.graph_builder.issue.api.DataImportIssueStore;
+import org.opentripplanner.graph_builder.model.GraphBuilderModule;
+import org.opentripplanner.transit.model.framework.AbstractTransitEntity;
+import org.opentripplanner.transit.service.TransitRepository;
+
+public class RouteToCentroidStationIdsValidator implements GraphBuilderModule {
+
+  private final DataImportIssueStore issueStore;
+  private final Collection<FeedScopedId> transitRouteToStationCentroid;
+  private final TransitRepository transitRepository;
+
+  public RouteToCentroidStationIdsValidator(
+    DataImportIssueStore issueStore,
+    Collection<FeedScopedId> transitRouteToStationCentroid,
+    TransitRepository transitRepository
+  ) {
+    this.issueStore = issueStore;
+    this.transitRouteToStationCentroid = transitRouteToStationCentroid;
+    this.transitRepository = transitRepository;
+  }
+
+  private void validate() {
+    var stationIds = transitRepository
+      .getSiteRepository()
+      .listStations()
+      .stream()
+      .map(AbstractTransitEntity::getId)
+      .collect(Collectors.toSet());
+    transitRouteToStationCentroid
+      .stream()
+      .filter(id -> !stationIds.contains(id))
+      .forEach(id ->
+        issueStore.add(
+          "UnknownStationId",
+          "Config parameter 'transitRouteToStationCentroid' specified a station that does not exist: %s",
+          id
+        )
+      );
+  }
+
+  @Override
+  public void buildGraph() {
+    validate();
+  }
+}

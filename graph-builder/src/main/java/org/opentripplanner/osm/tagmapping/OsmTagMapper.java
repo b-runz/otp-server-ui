@@ -1,0 +1,559 @@
+package org.opentripplanner.osm.tagmapping;
+
+import static org.opentripplanner.osm.wayproperty.MixinPropertiesBuilder.ofBicycleSafety;
+import static org.opentripplanner.osm.wayproperty.MixinPropertiesBuilder.ofWalkSafety;
+import static org.opentripplanner.osm.wayproperty.WayPropertiesBuilder.withModes;
+import static org.opentripplanner.street.model.StreetTraversalPermission.ALL;
+import static org.opentripplanner.street.model.StreetTraversalPermission.BICYCLE;
+import static org.opentripplanner.street.model.StreetTraversalPermission.CAR;
+import static org.opentripplanner.street.model.StreetTraversalPermission.NONE;
+import static org.opentripplanner.street.model.StreetTraversalPermission.PEDESTRIAN;
+import static org.opentripplanner.street.model.StreetTraversalPermission.PEDESTRIAN_AND_BICYCLE;
+
+import org.opentripplanner.graph_builder.issue.api.DataImportIssueStore;
+import org.opentripplanner.osm.model.OsmEntity;
+import org.opentripplanner.osm.model.TraverseDirection;
+import org.opentripplanner.osm.wayproperty.MixinPropertiesBuilder;
+import org.opentripplanner.osm.wayproperty.WayProperties;
+import org.opentripplanner.osm.wayproperty.WayPropertySet;
+import org.opentripplanner.osm.wayproperty.WayPropertySetBuilder;
+import org.opentripplanner.osm.wayproperty.specifier.BestMatchSpecifier;
+import org.opentripplanner.osm.wayproperty.specifier.Condition;
+import org.opentripplanner.osm.wayproperty.specifier.Condition.Equals;
+import org.opentripplanner.osm.wayproperty.specifier.Condition.Not;
+import org.opentripplanner.osm.wayproperty.specifier.ExactMatchSpecifier;
+import org.opentripplanner.osm.wayproperty.specifier.LogicalOrSpecifier;
+
+/**
+ * This factory class provides a default collection of {@link WayProperties} that determine how OSM
+ * streets can be traversed in various modes.
+ * <p>
+ * Circa January 2011, Grant and Mele at TriMet undertook proper testing of bike (and transit)
+ * routing, and worked with David Turner on assigning proper weights to different facility types.
+ * The weights in this file grew organically from trial and error, and are the result of months of
+ * testing and tweaking the routes that OTP returned, as well as actually walking/biking these
+ * routes and making changes based on those experiences. This set of weights should be a great
+ * starting point for others to use, but they are to some extent tailored to the situation in
+ * Portland and people shouldn't hesitate to adjust them to for their own instance.
+ * <p>
+ * The rules for assigning WayProperties to OSM ways are explained in. The final tie breaker if two
+ * Pickers both match is the sequence that the properties are added in this file: if all else is
+ * equal the 'props.setProperties' statement that is closer to the top of the page will prevail over
+ * those lower down the page.
+ * <p>
+ * Foot and bicycle permissions are also addressed in OpenStreetMapGraphBuilderImpl.Handler#getPermissionsForEntity().
+ * For instance, if a way that normally does not permit walking based on its tag matches (the
+ * prevailing 'props.setProperties' statement) has a 'foot=yes' tag the permissions are overridden
+ * and walking is allowed on that way.
+ * <p>
+ *
+ * @author bdferris, novalis
+ */
+
+public class OsmTagMapper {
+
+  /* Populate properties on existing WayPropertySet */
+  public WayPropertySet buildWayPropertySet() {
+    var props = WayPropertySet.of();
+    WayProperties noneWayProperties = withModes(NONE).build();
+    /* no bicycle tags */
+
+    /* NONE */
+    props.setProperties("mtb:scale=3", noneWayProperties);
+    props.setProperties("mtb:scale=4", noneWayProperties);
+    props.setProperties("mtb:scale=5", noneWayProperties);
+    props.setProperties("mtb:scale=6", noneWayProperties);
+    props.setProperties("highway=bridleway", withModes(NONE).walkSafety(1.6).bicycleSafety(1.3));
+
+    /* PEDESTRIAN */
+    props.setProperties("highway=corridor", withModes(PEDESTRIAN).walkSafety(1.1));
+    props.setProperties("highway=steps", withModes(PEDESTRIAN).walkSafety(1.2));
+    props.setProperties("highway=crossing", withModes(PEDESTRIAN).walkSafety(1.1));
+    props.setProperties("highway=platform", withModes(PEDESTRIAN).walkSafety(1.2));
+    props.setProperties("public_transport=platform", withModes(PEDESTRIAN).walkSafety(1.2));
+    props.setProperties("railway=platform", withModes(PEDESTRIAN).walkSafety(1.2));
+    props.setProperties(
+      "highway=pedestrian",
+      withModes(PEDESTRIAN).walkSafety(1.0).bicycleSafety(0.9)
+    );
+    props.setProperties(
+      "highway=footway",
+      withModes(PEDESTRIAN).walkSafety(1.0).bicycleSafety(1.1)
+    );
+    props.setProperties("mtb:scale=1", withModes(PEDESTRIAN).walkSafety(1.9).bicycleSafety(1.5));
+    props.setProperties("mtb:scale=2", withModes(PEDESTRIAN).walkSafety(3.8).bicycleSafety(3.0));
+    props.setProperties("indoor=area", withModes(PEDESTRIAN).walkSafety(1.1));
+    props.setProperties("indoor=corridor", withModes(PEDESTRIAN).walkSafety(1.1));
+
+    /* BICYCLE */
+    props.setProperties("highway=cycleway", withModes(BICYCLE).walkSafety(2.5).bicycleSafety(0.6));
+
+    /* PEDESTRIAN_AND_BICYCLE */
+    props.setProperties("mtb:scale=0", withModes(PEDESTRIAN_AND_BICYCLE).walkSafety(1.2));
+    props.setProperties(
+      "highway=path",
+      withModes(PEDESTRIAN_AND_BICYCLE).walkSafety(1.05).bicycleSafety(0.75)
+    );
+
+    /* ALL */
+    props.setProperties(
+      "highway=living_street",
+      withModes(ALL).walkSafety(1.15).bicycleSafety(0.9)
+    );
+    props.setProperties("highway=unclassified", withModes(ALL).walkSafety(1.25));
+    props.setProperties("highway=road", withModes(ALL).walkSafety(1.25));
+    props.setProperties("highway=byway", withModes(ALL).walkSafety(1.7).bicycleSafety(1.3));
+    props.setProperties("highway=track", withModes(ALL).walkSafety(1.7).bicycleSafety(1.3));
+    props.setProperties("highway=service", withModes(ALL).walkSafety(1.3).bicycleSafety(1.1));
+    props.setProperties("highway=residential", withModes(ALL).walkSafety(1.2).bicycleSafety(0.98));
+    props.setProperties(
+      "highway=residential_link",
+      withModes(ALL).walkSafety(1.2).bicycleSafety(0.98)
+    );
+    props.setProperties("highway=tertiary", withModes(ALL).walkSafety(1.25));
+    props.setProperties("highway=tertiary_link", withModes(ALL).walkSafety(1.25));
+    props.setProperties("highway=secondary", withModes(ALL).walkSafety(1.9).bicycleSafety(1.5));
+    props.setProperties(
+      "highway=secondary_link",
+      withModes(ALL).walkSafety(1.9).bicycleSafety(1.5)
+    );
+    props.setProperties("highway=primary", withModes(ALL).walkSafety(2.6).bicycleSafety(2.06));
+    props.setProperties("highway=primary_link", withModes(ALL).walkSafety(2.6).bicycleSafety(2.06));
+    props.setProperties("highway=trunk", withModes(ALL).walkSafety(9.3).bicycleSafety(7.47));
+    props.setProperties("highway=trunk_link", withModes(ALL).walkSafety(9.3).bicycleSafety(2.06));
+
+    /* DRIVING ONLY */
+    // trunk and motorway links are often short distances and necessary connections
+    props.setProperties("highway=motorway_link", withModes(CAR).bicycleSafety(2.06));
+    props.setProperties("highway=motorway", withModes(CAR).bicycleSafety(8));
+
+    // Do not walk on "moottoriliikennetie"/"Kraftfahrstrasse"/"Limited access road"
+    // https://en.wikipedia.org/wiki/Limited-access_road
+    props.setMixinProperties(
+      new ExactMatchSpecifier("motorroad=yes"),
+      new MixinPropertiesBuilder().removePermission(PEDESTRIAN_AND_BICYCLE)
+    );
+
+    /* cycleway=lane */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("cycleway", "lane"),
+        new Not(new Equals("highway", "cycleway"))
+      ),
+      ofBicycleSafety(0.87).addPermission(BICYCLE)
+    );
+
+    /* cycleway=share_busway */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("cycleway", "share_busway"),
+        new Not(new Equals("highway", "cycleway"))
+      ),
+      ofBicycleSafety(0.92).addPermission(BICYCLE)
+    );
+
+    /* cycleway=opposite_lane */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("cycleway", "opposite_lane"),
+        new Not(new Equals("highway", "cycleway"))
+      ),
+      new MixinPropertiesBuilder().directional(TraverseDirection.BACKWARD, builder ->
+        builder.withBicycleSafety(0.87).addPermission(BICYCLE)
+      )
+    );
+
+    /* cycleway=track */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("cycleway", "track"),
+        new Not(new Equals("highway", "cycleway"))
+      ),
+      ofBicycleSafety(0.75).addPermission(BICYCLE)
+    );
+
+    /* cycleway=opposite_track */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("cycleway", "opposite_track"),
+        new Not(new Equals("highway", "cycleway"))
+      ),
+      new MixinPropertiesBuilder().directional(TraverseDirection.BACKWARD, builder ->
+        builder.withBicycleSafety(0.75).addPermission(BICYCLE)
+      )
+    );
+
+    /* cycleway=shared_lane a.k.a. bike boulevards or neighborhood greenways */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("cycleway", "shared_lane"),
+        new Not(new Equals("highway", "cycleway"))
+      ),
+      ofBicycleSafety(0.77).addPermission(BICYCLE)
+    );
+
+    /* cycleway=opposite */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("cycleway", "opposite"),
+        new Not(new Equals("highway", "cycleway"))
+      ),
+      new MixinPropertiesBuilder().directional(TraverseDirection.BACKWARD, builder ->
+        builder.withBicycleSafety(1.4).addPermission(BICYCLE)
+      )
+    );
+
+    /* foot=designated */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("foot", "designated"),
+        new Not(new Condition.OneOf("highway", "footway", "pedestrian", "path"))
+      ),
+      ofWalkSafety(0.95)
+    );
+
+    /* sidewalk and crosswalk */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Not(new Equals("highway", "cycleway")),
+        new Equals("footway", "sidewalk")
+      ),
+      ofBicycleSafety(2.5)
+    );
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Not(new Equals("highway", "cycleway")),
+        new Equals("footway", "crossing")
+      ),
+      ofBicycleSafety(1.5)
+    );
+
+    /* bicycle=designated, but no bike infrastructure is present */
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("bicycle", "designated"),
+        new Condition.OneOfOrAbsent("cycleway"),
+        new Not(new Equals("highway", "cycleway")),
+        new Not(new Equals("lcn", "yes")),
+        new Not(new Equals("rcn", "yes")),
+        new Not(new Equals("ncn", "yes")),
+        new Not(new Equals("bicycle_road", "yes")),
+        new Not(new Equals("cyclestreet", "yes"))
+      ),
+      ofBicycleSafety(0.8)
+    );
+
+    // We assume highway/cycleway of a cycle network to be safer (for bicycle network relations, their network is copied to way in postLoad)
+    // this uses a OR since you don't want to apply the safety multiplier more than once.
+    // Signed bicycle_roads and cyclestreets exist in traffic codes of some european countries.
+    // Tagging in OSM and on-the-ground use is varied, so just assume they are "somehow safer", too.
+    // In my test area ways often, but not always, have both tags.
+    // For simplicity these two concepts are handled together.
+    props.setMixinProperties(
+      new LogicalOrSpecifier(
+        "lcn=yes",
+        "rcn=yes",
+        "ncn=yes",
+        "bicycle_road=yes",
+        "cyclestreet=yes"
+      ),
+      ofBicycleSafety(0.7)
+    );
+
+    // prefer walking on sidewalks
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Condition.OneOf("sidewalk", "yes", "left", "right", "both"),
+        new Not(new Condition.OneOf("highway", "footway", "pedestrian", "path", "trunk"))
+      ),
+      ofWalkSafety(0.9)
+    );
+
+    props.setMixinProperties(
+      new LogicalOrSpecifier(
+        "highway=trunk;sidewalk=yes",
+        "highway=trunk;sidewalk=left",
+        "highway=trunk;sidewalk=right",
+        "highway=trunk;sidewalk=both",
+        "highway=trunk_link;sidewalk=yes",
+        "highway=trunk_link;sidewalk=left",
+        "highway=trunk_link;sidewalk=right",
+        "highway=trunk_link;sidewalk=both"
+      ),
+      // reduce trunk walk safety value with sidewalk because a trunk road has a high safety value
+      // by default
+      ofWalkSafety(0.4)
+    );
+
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Equals("sidewalk", "lane"),
+        new Not(new Condition.OneOf("highway", "footway", "pedestrian", "path"))
+      ),
+      ofWalkSafety(0.95)
+    );
+
+    /*
+     * Automobile speeds in the United States: Based on my (mattwigway) personal experience, primarily in California
+     */
+    // ~= 104 km/h ~= 65 mph
+    props.setCarSpeed("highway=motorway", 29);
+    // ~= 56 km/h ~= 35 mph
+    props.setCarSpeed("highway=motorway_link", 15);
+    // ~= 89 km/h ~= 55 mph
+    props.setCarSpeed("highway=trunk", 24.6f);
+    // ~= 54 km/h ~= 35 mph
+    props.setCarSpeed("highway=trunk_link", 15);
+    // ~= 72 km/h ~= 45 mph
+    props.setCarSpeed("highway=primary", 20);
+    // ~= 40 km/h ~= 25 mph
+    props.setCarSpeed("highway=primary_link", 11.2f);
+    // ~= 56 km/h ~= 35 mph
+    props.setCarSpeed("highway=secondary", 15);
+    // ~= 40 km/h ~= 25 mph
+    props.setCarSpeed("highway=secondary_link", 11.2f);
+    props.setCarSpeed("highway=tertiary", 11.2f);
+    props.setCarSpeed("highway=tertiary_link", 11.2f);
+    // ~= 8 km/h ~= 5 mph
+    props.setCarSpeed("highway=living_street", 2.2f);
+
+    // generally, these will not allow cars at all, but the docs say
+    // "For roads used mainly/exclusively for pedestrians . . . which may allow access by
+    // motorised vehicles only for very limited periods of the day."
+    // http://wiki.openstreetmap.org/wiki/Key:highway
+    // This of course makes the street network time-dependent
+    // ~= 8 km/h ~= 5 mph
+    props.setCarSpeed("highway=pedestrian", 2.2f);
+
+    // ~= 40 km/h ~= 25 mph
+    props.setCarSpeed("highway=residential", 11.2f);
+    props.setCarSpeed("highway=unclassified", 11.2f);
+    // ~= 24 km/h ~= 15 mph
+    props.setCarSpeed("highway=service", 6.7f);
+    // ~= 16 km/h ~= 10 mph
+    props.setCarSpeed("highway=track", 4.5f);
+    // ~= 40 km/h ~= 25 mph
+    props.setCarSpeed("highway=road", 11.2f);
+
+    // default ~= 25 mph
+    props.setDefaultCarSpeed(11.2f);
+    // 38 m/s ~= 85 mph ~= 137 kph
+    props.setMaxPossibleCarSpeed(38f);
+
+    /* special situations */
+
+    /*
+     * cycleway:left/right=lane/track/shared_lane permutations - no longer needed because left/right matching algorithm does this
+     */
+
+    /* cycleway:left=lane */
+    /* cycleway:right=track */
+    /* cycleway:left=track */
+    /* cycleway:right=shared_lane */
+    /* cycleway:left=shared_lane */
+    /* cycleway:right=lane, cycleway:left=track */
+    /* cycleway:right=lane, cycleway:left=shared_lane */
+    /* cycleway:right=track, cycleway:left=lane */
+    /* cycleway:right=track, cycleway:left=shared_lane */
+    /* cycleway:right=shared_lane, cycleway:left=lane */
+    /* cycleway:right=shared_lane, cycleway:left=track */
+
+    /* surface=* mixins */
+
+    /*
+     * The following tags have been removed from surface weights because they are no more of an impedence to bicycling than a paved surface
+     * surface=paving_stones surface=fine_gravel (sounds counter-intuitive but see the definition on the OSM Wiki) surface=tartan (this what
+     * running tracks are usually made of)
+     */
+
+    props.setMixinProperties("surface=unpaved", ofBicycleSafety(1.18));
+    props.setMixinProperties("surface=compacted", ofBicycleSafety(1.18));
+    props.setMixinProperties("surface=wood", ofBicycleSafety(1.18));
+
+    props.setMixinProperties("surface=cobblestone", ofBicycleSafety(1.3));
+    props.setMixinProperties("surface=sett", ofBicycleSafety(1.3));
+    props.setMixinProperties("surface=unhewn_cobblestone", ofBicycleSafety(1.5));
+    props.setMixinProperties("surface=grass_paver", ofBicycleSafety(1.3));
+    props.setMixinProperties("surface=pebblestone", ofBicycleSafety(1.3));
+    // Can be slick if wet, but otherwise not unfavorable to bikes
+    props.setMixinProperties("surface=metal", ofBicycleSafety(1.3));
+    props.setMixinProperties("surface=ground", ofBicycleSafety(1.5));
+    props.setMixinProperties("surface=dirt", ofBicycleSafety(1.5));
+    props.setMixinProperties("surface=earth", ofBicycleSafety(1.5));
+    props.setMixinProperties("surface=grass", ofBicycleSafety(1.5));
+    props.setMixinProperties("surface=mud", ofBicycleSafety(1.5));
+    props.setMixinProperties("surface=woodchip", ofBicycleSafety(1.5));
+    props.setMixinProperties("surface=gravel", ofBicycleSafety(1.5));
+    props.setMixinProperties("surface=artifical_turf", ofBicycleSafety(1.5));
+
+    /* sand is deadly for bikes */
+    props.setMixinProperties("surface=sand", ofBicycleSafety(100));
+
+    /* Portland-local mixins */
+
+    props.setMixinProperties("foot=discouraged", ofWalkSafety(3));
+    props.setMixinProperties("bicycle=discouraged", ofBicycleSafety(3));
+
+    props.setMixinProperties("foot=use_sidepath", ofWalkSafety(5));
+    props.setMixinProperties("bicycle=use_sidepath", ofBicycleSafety(5));
+
+    props.setMixinProperties(
+      new ExactMatchSpecifier(
+        new Condition.OneOf("embedded_rails", "tram", "light_rail", "rail", "disused", "yes"),
+        new Not(new Condition.Equals("cycleway", "lane")),
+        new Not(new Condition.Equals("cycleway:both", "lane"))
+      ),
+      ofBicycleSafety(2)
+    );
+
+    populateNames(props);
+
+    // slope overrides
+    props.setSlopeOverride(new BestMatchSpecifier("bridge=*"), true);
+    props.setSlopeOverride(new BestMatchSpecifier("embankment=*"), true);
+    props.setSlopeOverride(new BestMatchSpecifier("cutting=*"), true);
+    props.setSlopeOverride(new BestMatchSpecifier("tunnel=*"), true);
+    props.setSlopeOverride(new BestMatchSpecifier("location=underground"), true);
+    props.setSlopeOverride(new BestMatchSpecifier("indoor=yes"), true);
+
+    return props.build();
+  }
+
+  static void populateNames(WayPropertySetBuilder props) {
+    // Basics
+    props.createNames("highway=cycleway", "name.bike_path");
+    props.createNames("cycleway=track", "name.bike_path");
+    props.createNames("highway=pedestrian", "name.pedestrian_path");
+    props.createNames("highway=pedestrian;area=yes", "name.pedestrian_area");
+    props.createNames("highway=path", "name.path");
+    props.createNames("highway=footway", "name.pedestrian_path");
+    props.createNames("highway=bridleway", "name.bridleway");
+    props.createNames("highway=footway;bicycle=no", "name.pedestrian_path");
+    props.createNames("highway=corridor", "name.corridor");
+    props.createNames("indoor=corridor", "name.corridor");
+    props.createNames("indoor=area", "name.indoor_area");
+
+    // Platforms
+    props.createNames("highway=platform;ref=*", "name.platform_ref");
+    props.createNames("railway=platform;ref=*", "name.platform_ref");
+    props.createNames("railway=platform;highway=footway;footway=sidewalk", "name.platform");
+    props.createNames("railway=platform;highway=path;path=sidewalk", "name.platform");
+    props.createNames("railway=platform;highway=pedestrian", "name.platform");
+    props.createNames("railway=platform;highway=path", "name.platform");
+    props.createNames("railway=platform;highway=footway", "name.platform");
+    props.createNames("public_transport=platform", "name.platform");
+    props.createNames("highway=platform", "name.platform");
+    props.createNames("railway=platform", "name.platform");
+    props.createNames("railway=platform;highway=footway;bicycle=no", "name.platform");
+
+    // Bridges/Tunnels
+    props.createNames("highway=pedestrian;bridge=*", "name.footbridge");
+    props.createNames("highway=path;bridge=*", "name.footbridge");
+    props.createNames("highway=footway;bridge=*", "name.footbridge");
+
+    props.createNames("highway=pedestrian;tunnel=*", "name.underpass");
+    props.createNames("highway=path;tunnel=*", "name.underpass");
+    props.createNames("highway=footway;tunnel=*", "name.underpass");
+
+    // Basic Mappings
+    props.createNames("highway=motorway", "name.road");
+    props.createNames("highway=motorway_link", "name.ramp");
+    props.createNames("highway=trunk", "name.road");
+    props.createNames("highway=trunk_link", "name.ramp");
+
+    props.createNames("highway=primary", "name.road");
+    props.createNames("highway=primary_link", "name.link");
+    props.createNames("highway=secondary", "name.road");
+    props.createNames("highway=secondary_link", "name.link");
+    props.createNames("highway=tertiary", "name.road");
+    props.createNames("highway=tertiary_link", "name.link");
+    props.createNames("highway=unclassified", "name.road");
+    props.createNames("highway=residential", "name.road");
+    props.createNames("highway=living_street", "name.road");
+    props.createNames("highway=road", "name.road");
+    props.createNames("highway=service", "name.service_road");
+    props.createNames("highway=service;service=alley", "name.alley");
+    props.createNames("highway=service;service=parking_aisle", "name.parking_aisle");
+    props.createNames("highway=byway", "name.byway");
+    props.createNames("highway=track", "name.track");
+
+    props.createNames("highway=footway;footway=sidewalk", "name.sidewalk");
+    props.createNames("highway=path;path=sidewalk", "name.sidewalk");
+
+    props.createNames("highway=steps", "name.steps");
+
+    props.createNames("amenity=bicycle_parking;name=*", "name.bicycle_parking_name");
+    props.createNames("amenity=bicycle_parking", "name.bicycle_parking");
+
+    props.createNames("amenity=parking;name=*", "name.park_and_ride_name");
+    props.createNames("amenity=parking", "name.park_and_ride_station");
+  }
+
+  public boolean doesTagValueDisallowThroughTraffic(String tagValue) {
+    return (
+      "no".equals(tagValue) ||
+      "destination".equals(tagValue) ||
+      "private".equals(tagValue) ||
+      "customers".equals(tagValue) ||
+      "delivery".equals(tagValue)
+    );
+  }
+
+  public float getCarSpeedForWay(
+    OsmEntity way,
+    TraverseDirection direction,
+    DataImportIssueStore issueStore
+  ) {
+    return way.getOsmProvider().getWayPropertySet().getCarSpeedForWay(way, direction, issueStore);
+  }
+
+  public boolean isGeneralNoThroughTraffic(OsmEntity way) {
+    String access = way.getTag("access");
+    return doesTagValueDisallowThroughTraffic(access);
+  }
+
+  public boolean isVehicleThroughTrafficExplicitlyDisallowed(OsmEntity way) {
+    String vehicle = way.getTag("vehicle");
+    if (vehicle != null) {
+      return doesTagValueDisallowThroughTraffic(vehicle);
+    } else {
+      return isGeneralNoThroughTraffic(way);
+    }
+  }
+
+  /**
+   * Returns true if through traffic for motor vehicles is not allowed.
+   */
+  public boolean isMotorVehicleThroughTrafficExplicitlyDisallowed(OsmEntity way) {
+    String motorVehicle = way.getTag("motor_vehicle");
+    if (motorVehicle != null) {
+      return doesTagValueDisallowThroughTraffic(motorVehicle);
+    } else {
+      return isVehicleThroughTrafficExplicitlyDisallowed(way);
+    }
+  }
+
+  /**
+   * Returns true if through traffic for bicycle is not allowed.
+   */
+  public boolean isBicycleThroughTrafficExplicitlyDisallowed(OsmEntity way) {
+    String bicycle = way.getTag("bicycle");
+    if (bicycle != null) {
+      return doesTagValueDisallowThroughTraffic(bicycle);
+    } else {
+      return isVehicleThroughTrafficExplicitlyDisallowed(way);
+    }
+  }
+
+  /**
+   * Returns true if through traffic for walk is not allowed.
+   */
+  public boolean isWalkThroughTrafficExplicitlyDisallowed(OsmEntity way) {
+    String foot = way.getTag("foot");
+    if (foot != null) {
+      return doesTagValueDisallowThroughTraffic(foot);
+    } else {
+      return isGeneralNoThroughTraffic(way);
+    }
+  }
+}
