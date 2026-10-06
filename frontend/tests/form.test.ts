@@ -22,13 +22,9 @@ function freshRoot(): HTMLElement {
         <button type="button" id="swap-button"></button>
       </div>
       <input type="checkbox" id="prefer-hubs-checkbox" />
-      <select id="max-transfers-select">
-        <option value="">Unlimited</option>
-        <option value="0">0</option>
-        <option value="1">1</option>
-        <option value="2">2</option>
-        <option value="3">3</option>
-      </select>
+      <button type="button" id="max-transfers-decrement"></button>
+      <span id="max-transfers-value"></span>
+      <button type="button" id="max-transfers-increment"></button>
     </form>
   `;
   return document.body;
@@ -183,36 +179,69 @@ test("changing the date or time input combines both into one ISO string passed t
   expect(combined.getMinutes()).toBe(58);
 });
 
-test("the max-transfers select defaults to Unlimited (empty value) when state.maxTransfers is null", () => {
+test("the max-transfers value defaults to Unlimited, with decrement disabled at the floor", () => {
   const root = freshRoot();
   renderForm(root, createInitialState(), noopHandlers());
-  expect(root.querySelector<HTMLSelectElement>("#max-transfers-select")!.value).toBe("");
+  expect(root.querySelector<HTMLSpanElement>("#max-transfers-value")!.textContent).toBe("Unlimited");
+  expect(root.querySelector<HTMLButtonElement>("#max-transfers-decrement")!.disabled).toBe(true);
+  expect(root.querySelector<HTMLButtonElement>("#max-transfers-increment")!.disabled).toBe(false);
 });
 
-test("the max-transfers select reflects a finite state.maxTransfers value", () => {
+test("the max-transfers value reflects a finite state.maxTransfers value, with both buttons enabled mid-range", () => {
   const root = freshRoot();
   const state = { ...createInitialState(), maxTransfers: 2 };
   renderForm(root, state, noopHandlers());
-  expect(root.querySelector<HTMLSelectElement>("#max-transfers-select")!.value).toBe("2");
+  expect(root.querySelector<HTMLSpanElement>("#max-transfers-value")!.textContent).toBe("2");
+  expect(root.querySelector<HTMLButtonElement>("#max-transfers-decrement")!.disabled).toBe(false);
+  expect(root.querySelector<HTMLButtonElement>("#max-transfers-increment")!.disabled).toBe(false);
 });
 
-test("changing the max-transfers select to a number calls onMaxTransfersChange with that number", () => {
+test("increment is disabled at the ceiling (3)", () => {
+  const root = freshRoot();
+  const state = { ...createInitialState(), maxTransfers: 3 };
+  renderForm(root, state, noopHandlers());
+  expect(root.querySelector<HTMLButtonElement>("#max-transfers-increment")!.disabled).toBe(true);
+});
+
+test("clicking increment from Unlimited steps to 0", () => {
   const root = freshRoot();
   const onMaxTransfersChange = mock((_value: number | null) => {});
   renderForm(root, createInitialState(), { ...noopHandlers(), onMaxTransfersChange });
-  const select = root.querySelector<HTMLSelectElement>("#max-transfers-select")!;
-  select.value = "1";
-  select.dispatchEvent(new Event("change", { bubbles: true }));
-  expect(onMaxTransfersChange).toHaveBeenCalledWith(1);
+  root.querySelector<HTMLButtonElement>("#max-transfers-increment")!.dispatchEvent(new Event("click", { bubbles: true }));
+  expect(onMaxTransfersChange).toHaveBeenCalledWith(0);
 });
 
-test("changing the max-transfers select back to Unlimited calls onMaxTransfersChange with null", () => {
+test("clicking increment from a finite value steps up by one", () => {
   const root = freshRoot();
   const onMaxTransfersChange = mock((_value: number | null) => {});
-  const state = { ...createInitialState(), maxTransfers: 2 };
+  const state = { ...createInitialState(), maxTransfers: 1 };
   renderForm(root, state, { ...noopHandlers(), onMaxTransfersChange });
-  const select = root.querySelector<HTMLSelectElement>("#max-transfers-select")!;
-  select.value = "";
-  select.dispatchEvent(new Event("change", { bubbles: true }));
+  root.querySelector<HTMLButtonElement>("#max-transfers-increment")!.dispatchEvent(new Event("click", { bubbles: true }));
+  expect(onMaxTransfersChange).toHaveBeenCalledWith(2);
+});
+
+test("clicking decrement from 0 steps back down to Unlimited (null)", () => {
+  const root = freshRoot();
+  const onMaxTransfersChange = mock((_value: number | null) => {});
+  const state = { ...createInitialState(), maxTransfers: 0 };
+  renderForm(root, state, { ...noopHandlers(), onMaxTransfersChange });
+  root.querySelector<HTMLButtonElement>("#max-transfers-decrement")!.dispatchEvent(new Event("click", { bubbles: true }));
   expect(onMaxTransfersChange).toHaveBeenCalledWith(null);
+});
+
+test("clicking decrement at Unlimited (the floor) never calls the handler", () => {
+  const root = freshRoot();
+  const onMaxTransfersChange = mock((_value: number | null) => {});
+  renderForm(root, createInitialState(), { ...noopHandlers(), onMaxTransfersChange });
+  root.querySelector<HTMLButtonElement>("#max-transfers-decrement")!.dispatchEvent(new Event("click", { bubbles: true }));
+  expect(onMaxTransfersChange).not.toHaveBeenCalled();
+});
+
+test("clicking increment at the ceiling (3) never calls the handler", () => {
+  const root = freshRoot();
+  const onMaxTransfersChange = mock((_value: number | null) => {});
+  const state = { ...createInitialState(), maxTransfers: 3 };
+  renderForm(root, state, { ...noopHandlers(), onMaxTransfersChange });
+  root.querySelector<HTMLButtonElement>("#max-transfers-increment")!.dispatchEvent(new Event("click", { bubbles: true }));
+  expect(onMaxTransfersChange).not.toHaveBeenCalled();
 });

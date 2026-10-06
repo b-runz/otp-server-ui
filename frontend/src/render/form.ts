@@ -25,6 +25,10 @@ const TIME_MODE_OPTIONS: Array<[TimeMode, string]> = [
   ["arrive_by", "Arrive by"],
 ];
 
+// The stepper's own value ladder, floor (Unlimited) to ceiling (3) -- "Cannot go under unlimited"
+// (Unlimited is index 0, never negative) and there is likewise no ceiling past 3.
+const MAX_TRANSFERS_STEPS: Array<number | null> = [null, 0, 1, 2, 3];
+
 function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
@@ -75,7 +79,9 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   const dateInput = root.querySelector<HTMLInputElement>("#date-input")!;
   const timeInput = root.querySelector<HTMLInputElement>("#time-input")!;
   const preferHubsCheckbox = root.querySelector<HTMLInputElement>("#prefer-hubs-checkbox")!;
-  const maxTransfersSelect = root.querySelector<HTMLSelectElement>("#max-transfers-select")!;
+  const maxTransfersDecrement = root.querySelector<HTMLButtonElement>("#max-transfers-decrement")!;
+  const maxTransfersValue = root.querySelector<HTMLSpanElement>("#max-transfers-value")!;
+  const maxTransfersIncrement = root.querySelector<HTMLButtonElement>("#max-transfers-increment")!;
   const fromFavoriteStar = root.querySelector<HTMLButtonElement>("#from-favorite-star")!;
   const toFavoriteStar = root.querySelector<HTMLButtonElement>("#to-favorite-star")!;
   const fromClear = root.querySelector<HTMLButtonElement>("#from-clear")!;
@@ -86,8 +92,10 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   renderFavoriteStar(fromFavoriteStar, state.from.resolved, state.favorites, () => handlers.onToggleFavorite("from"));
   renderFavoriteStar(toFavoriteStar, state.to.resolved, state.favorites, () => handlers.onToggleFavorite("to"));
   preferHubsCheckbox.checked = state.preferHubs;
-  const expectedMaxTransfersValue = state.maxTransfers == null ? "" : String(state.maxTransfers);
-  if (maxTransfersSelect.value !== expectedMaxTransfersValue) maxTransfersSelect.value = expectedMaxTransfersValue;
+  const maxTransfersIndex = MAX_TRANSFERS_STEPS.indexOf(state.maxTransfers);
+  maxTransfersValue.textContent = state.maxTransfers == null ? "Unlimited" : String(state.maxTransfers);
+  maxTransfersDecrement.disabled = maxTransfersIndex <= 0;
+  maxTransfersIncrement.disabled = maxTransfersIndex >= MAX_TRANSFERS_STEPS.length - 1;
 
   const expectedDateValue = toDateValue(state.dateTimeIso);
   if (dateInput.value !== expectedDateValue) dateInput.value = expectedDateValue;
@@ -123,7 +131,12 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   timeInput.onchange = onDateOrTimeChanged;
 
   preferHubsCheckbox.onchange = () => handlers.onPreferHubsChange(preferHubsCheckbox.checked);
-  maxTransfersSelect.onchange = () => {
-    handlers.onMaxTransfersChange(maxTransfersSelect.value === "" ? null : Number(maxTransfersSelect.value));
+  maxTransfersDecrement.onclick = () => {
+    const index = MAX_TRANSFERS_STEPS.indexOf(state.maxTransfers);
+    if (index > 0) handlers.onMaxTransfersChange(MAX_TRANSFERS_STEPS[index - 1]);
+  };
+  maxTransfersIncrement.onclick = () => {
+    const index = MAX_TRANSFERS_STEPS.indexOf(state.maxTransfers);
+    if (index < MAX_TRANSFERS_STEPS.length - 1) handlers.onMaxTransfersChange(MAX_TRANSFERS_STEPS[index + 1]);
   };
 }

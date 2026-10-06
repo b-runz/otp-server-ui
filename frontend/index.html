@@ -45,16 +45,14 @@
         </span>
       </label>
 
-      <label class="max-transfers-row" for="max-transfers-select">
-        Max connections
-        <select id="max-transfers-select">
-          <option value="">Unlimited</option>
-          <option value="0">0</option>
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-        </select>
-      </label>
+      <div class="max-transfers-row">
+        <span>Max connections</span>
+        <div class="max-transfers-control">
+          <button type="button" id="max-transfers-decrement" aria-label="Decrease max connections">−</button>
+          <span id="max-transfers-value" aria-live="polite">Unlimited</span>
+          <button type="button" id="max-transfers-increment" aria-label="Increase max connections">+</button>
+        </div>
+      </div>
 
       <button type="submit" id="search-button" class="button-primary">Search</button>
       <button type="button" id="drop-me-off-button" class="button-outline">Drop me off</button>

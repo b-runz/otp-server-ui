@@ -283,13 +283,33 @@ button {
   justify-content: space-between;
 }
 
-.max-transfers-row select {
+.max-transfers-control {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.max-transfers-control button {
   background: var(--card-bg-raised);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 50%;
   color: var(--text);
-  padding: 0.4rem 0.8rem;
-  font: inherit;
+  width: 2rem;
+  height: 2rem;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.max-transfers-control button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.max-transfers-control span {
+  min-width: 4.5rem;
+  text-align: center;
+  color: var(--accent-outline-text);
 }
 
 /* --- Primary / outlined pill buttons --- */
