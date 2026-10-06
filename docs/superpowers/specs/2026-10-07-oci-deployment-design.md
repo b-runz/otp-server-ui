@@ -71,7 +71,8 @@ Internet
 |  via xcaddy with the caddy-ratelimit plugin                       |
 |    - terminates TLS for otp.brj.one                               |
 |    - rate_limit zone keyed on {client_ip} (in-memory sliding      |
-|      window) -> over the limit: respond 429                       |
+|      window) -> over the limit: respond 403 (same as a bad token  |
+|      -- see "Uniform rejection response," below)                  |
 |    - checks X-Auth-Token header (plain string compare,            |
 |      no backend call, no crypto)                                  |
 |    - match     -> reverse_proxy 127.0.0.1:8081                    |
@@ -251,6 +252,10 @@ otp.brj.one {
     }
   }
 
+  handle_errors 429 {
+    respond 403
+  }
+
   @authorized header X-Auth-Token "<token>"
   handle @authorized {
     reverse_proxy 127.0.0.1:8081
@@ -263,6 +268,21 @@ otp.brj.one {
 starting point generous enough for one app user's normal burst of
 autocomplete/search calls, not a carefully load-tested number; see "Open
 Questions.")
+
+**Uniform rejection response (the user's own reasoning).** The
+`caddy-ratelimit` module always returns its own `429` internally —
+confirmed directly, it has no built-in option to change that status code
+— but Caddy's own `handle_errors` directive intercepts it before it
+reaches the client and rewrites it to a bare `403`, identical to the
+invalid-token response: same status code, same empty body, no
+`Retry-After` header (which the plugin's own default response would
+otherwise include, and which would itself be a distinguishing signal). A
+`429` tells a prober "there's a rate limiter here, and backing off or
+spreading requests across IPs will get through" — confirmation that
+probing is worth continuing. An indistinguishable `403` gives an attacker
+no way to tell "wrong token" apart from "too many requests," so there's
+nothing to learn from varying their approach and no signal that a guard
+exists at all, beyond the fact that every request keeps failing.
 
 ### 3. GitHub Actions + GHCR
 
@@ -403,14 +423,15 @@ proven:
 
 ## Error Handling
 
-- **Invalid/missing `X-Auth-Token`:** Caddy responds `403` with an empty
-  body. No `WWW-Authenticate` header, no JSON error body, no distinguishing
-  information between "wrong token" and "no token at all" — exactly the
-  "no other info given" requirement.
-- **Rate limit exceeded:** Caddy's `caddy-ratelimit` plugin responds `429`
-  on its own, before the request ever reaches the `X-Auth-Token` check or
-  the backend — checked first in the Caddyfile (Component 2) specifically
-  so a flood of *any* traffic is capped, not just unauthorized traffic.
+- **Invalid/missing `X-Auth-Token`, or rate limit exceeded:** both produce
+  the exact same response — `403`, empty body, no `WWW-Authenticate`
+  header, no `Retry-After` header, nothing distinguishing "wrong token"
+  from "no token" from "too many requests." The rate-limit check runs
+  first in the Caddyfile (Component 2), before the token check or the
+  backend, so a flood of *any* traffic is capped, not just unauthorized
+  traffic — but by the time a response leaves the VM, which of the two
+  guards actually fired is deliberately unknowable from the outside (see
+  "Uniform rejection response" in Component 2).
 - **Backend container crash/restart:** Caddy's `reverse_proxy` returns a
   `502` for a correctly-authorized request if the backend is down — this
   does leak "something's wrong" to an authorized caller, which is
@@ -463,8 +484,11 @@ proven:
   `graph.obj` and the running backend container are both left untouched,
   and the script exits non-zero.
 - **Rate limiting:** send more than the configured `events`/`window`
-  budget from one IP in a short burst and confirm a `429` — and confirm a
-  normal, slower request pattern is never affected.
+  budget from one IP in a short burst and confirm a `403` (**not** a
+  `429` — confirm the `handle_errors` rewrite actually fires, not just
+  that the plugin's own default response happens to look similar), with
+  no `Retry-After` header, byte-for-byte matching a bad-token response's
+  shape. Also confirm a normal, slower request pattern is never affected.
 - **GHCR pull with no credentials configured on the VM at all** —
   confirms the "packages set to public" decision (Component 3) actually
   works as intended, not just assumed.
