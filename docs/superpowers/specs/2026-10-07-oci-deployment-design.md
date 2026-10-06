@@ -47,6 +47,12 @@ nothing in this design changes that shape.
 - Zero-downtime/blue-green deploys. A `terraform apply` that updates the
   running container briefly interrupts service; acceptable for a
   single-user personal site.
+- Improving the graph-builder's own output quality (restoring the
+  skipped `DirectTransferGenerator`/`IslandPruningModule`/
+  `OsmBoardingLocationsModule`/elevation modules — see
+  `docs/graph-build.md`'s "Known simplifications"). This design reuses
+  that tool's existing behavior unchanged; revisiting those simplifications
+  on their own merits is a separate, later decision.
 
 ## Architecture
 
@@ -56,22 +62,29 @@ Internet
    | :80 (ACME HTTP-01 challenge + redirect to 443)
    | :443 (TLS, Let's Encrypt via Caddy, domain: otp.brj.one)
    v
-+--------------------------------------------------+
-| OCI VM "bike-bus-otp" (VM.Standard.A1.Flex, ARM)  |
-|                                                    |
-|  Caddy (the only process with a public listener)  |
-|    - terminates TLS for otp.brj.one               |
-|    - checks X-Auth-Token header (plain string     |
-|      compare, no backend call, no crypto)          |
-|    - match  -> reverse_proxy 127.0.0.1:8081        |
-|    - no match -> respond 403 (empty body)          |
-|         |                                          |
-|         v (loopback only, not reachable externally)|
-|  otp-server-ui backend container, :8081            |
-|    - Ktor app: API + static frontend               |
-|    - GRAPH_FILE_PATH -> baked-in Denmark graph.obj |
-|    - GOOGLE_PLACES_API_KEY from env (secret)        |
-+--------------------------------------------------+
++------------------------------------------------------------------+
+| OCI VM "bike-bus-otp" (VM.Standard.A1.Flex, ARM)                  |
+|                                                                    |
+|  Caddy (the only process with a public listener)                  |
+|    - terminates TLS for otp.brj.one                               |
+|    - checks X-Auth-Token header (plain string compare,            |
+|      no backend call, no crypto)                                  |
+|    - match     -> reverse_proxy 127.0.0.1:8081                    |
+|    - no match  -> respond 403 (empty body)                        |
+|         |                                                         |
+|         v (loopback only, not reachable externally)               |
+|  otp-server-ui backend container, :8081                          |
+|    - Ktor app: API + static frontend                              |
+|    - GRAPH_FILE_PATH -> /home/ubuntu/otp-graph/graph.obj           |
+|      (a host bind mount, read-only -- NOT baked into the image;   |
+|      see "Graph refresh," below)                                  |
+|    - GOOGLE_PLACES_API_KEY from env (secret)                      |
+|                                                                    |
+|  cron, weekly (chosen off-peak: 03:00 Europe/Copenhagen)          |
+|    -> runs the graph-builder image (below), writes to a temp      |
+|       path, validates, atomically replaces graph.obj, restarts    |
+|       the backend container                                      |
++------------------------------------------------------------------+
 ```
 
 The security boundary is unchanged from today's deployment: OCI's security
@@ -82,16 +95,21 @@ even a Caddy misconfiguration can't expose it directly.
 
 ## Components
 
-### 1. `Dockerfile` (new, in `otp-server-ui` repo root)
+### 1. `Dockerfile` (new, in `otp-server-ui` repo root) — the serving backend
 
 Multi-stage build:
 - **Build stage:** a JDK 17 image, runs `./gradlew :backend:installDist`
   (or an equivalent distribution task — confirmed during planning) to
   produce a runnable distribution without needing Gradle at runtime.
 - **Runtime stage:** a slim JRE 17 image (e.g. `eclipse-temurin:17-jre`),
-  copies the built distribution and the pre-built Denmark `graph.obj` in,
-  sets `GRAPH_FILE_PATH`, `FRONTEND_DIST_PATH`, `PORT=8080` as defaults,
-  and runs the distribution's own launcher script.
+  copies the built distribution in, sets `FRONTEND_DIST_PATH`,
+  `PORT=8080` as defaults, and runs the distribution's own launcher
+  script. **No graph file is baked into this image** — see "Graph
+  refresh," below: `GRAPH_FILE_PATH` is supplied at container-run time,
+  pointing at a host bind mount the weekly job keeps up to date. This is
+  the "image is source code only" requirement: rebuilding/redeploying
+  this image never needs a ~600 MB graph file baked in, and the image
+  itself never goes stale just because the transit data did.
 - Built **for `linux/arm64`** specifically — the VM is Ampere ARM, not
   x86 — via `podman build --platform linux/arm64` (confirmed working on
   this machine: podman's qemu-based emulation runs a real `aarch64`
@@ -101,6 +119,99 @@ Multi-stage build:
   image bakes in a built copy rather than relying on a live bind mount
   (this is a packaged deployment, not the local fast-iteration Podman
   setup from earlier in this project's history).
+
+### 1a. Graph refresh — promoting `.tools/graph-builder` into a real module
+
+**What exists today, and why it isn't directly reusable as-is.** The
+Denmark `graph.obj` currently running locally was produced by
+`.tools/graph-builder/`'s `BuildFixtureGraph` driver — but that tool is
+explicitly documented (`docs/graph-build.md`) as a one-off **fixture**
+builder: it is entirely gitignored (never committed, anywhere), it takes
+already-downloaded local OSM/GTFS file paths as plain command-line
+arguments rather than fetching them itself, and its own docs state a
+"full production Denmark-wide graph-building flow" would need more than
+it currently does. The actual full-Denmark source files it was run
+against (`denmark-latest.osm.pbf`, `GTFS.zip`) came from the sibling
+`bikebus` repo's own Python pipeline's build output — a different
+project's build artifacts, not anything this project owns or can rely on
+long-term.
+
+None of that is a reason to rebuild the tool — per the stated direction,
+its existing behavior (and documented simplifications: no
+`DirectTransferGenerator`/`IslandPruningModule`/`OsmBoardingLocationsModule`/
+elevation — see `docs/graph-build.md`'s "Known simplifications") carries
+forward unchanged. What changes is packaging and sourcing:
+
+- **Promoted out of `.tools/` into a real, tracked top-level Gradle
+  module** (`graph-builder/`, joining `settings.gradle.kts` alongside
+  `backend`, `otp-utils`, etc.) — `.tools/` the directory was always
+  meant as "untracked scratch," which no longer fits a component a
+  production cron job depends on.
+- **Gains a real download step** before `BuildFixtureGraph` runs, against
+  two confirmed, real, unauthenticated URLs (verified against bikebus's
+  own documented pipeline sources, not guessed):
+  - OSM: `https://download.geofabrik.de/europe/denmark-latest.osm.pbf`
+  - GTFS: `https://www.rejseplanen.info/labs/GTFS.zip` (Rejseplanen's own
+    public feed, which *they* refresh weekly — this project's own weekly
+    cadence matches the upstream data's own real refresh rate, not an
+    arbitrary interval)
+- Run **unclipped** (no bbox clipping — that clipping step was specific
+  to producing the small Aarhus-area test fixture; the production job
+  wants the real, full-Denmark extract, exactly like the already-proven
+  local run that produced today's `denmark-graph.obj`).
+
+### 1b. `graph-builder/Dockerfile` (new) — the weekly refresh job
+
+A **second** image, separate from the serving backend, single-purpose:
+download both sources fresh, run the (now-real-module) graph builder with
+`-Xmx8g`, write the result to a mounted output path, exit 0 on success or
+non-zero (with no partial/corrupt output file left behind) on any
+failure. Also built for `linux/arm64`, pushed to the same OCIR repository
+under its own tag (e.g. `arn.ocir.io/axy3etqux7lj/otp-graph-builder:<tag>`).
+
+### 1c. The VM-side weekly job (cron, provisioned via cloud-init)
+
+A plain shell script, installed as `/etc/cron.d/otp-graph-refresh`,
+**03:00 Europe/Copenhagen weekly** (chosen off-peak — see "Known risk:
+memory contention," below):
+
+1. `docker pull` the latest `otp-graph-builder` image from OCIR.
+2. `docker run --rm -v /home/ubuntu/otp-graph:/output <image>`, which
+   writes `/output/graph.obj.new` (never overwriting the live
+   `graph.obj` directly — the container's own job ends at producing a
+   candidate file, not at deciding to go live with it).
+3. **Validate** the result: exit code was 0, the file exists, and its
+   size is sane (a crude but effective check — a truncated/corrupt build
+   would be a small fraction of the real file's size).
+4. **On success:** atomically `mv graph.obj.new graph.obj` (same
+   directory, so this is a rename, not a copy — no window where the file
+   is partially written at the live path), then `docker restart
+   otp-server-ui` so the already-running backend picks up the new graph
+   (it only ever loads the graph once, at startup, into memory — per the
+   project's own founding design goal — so a restart is required; the
+   file changing on disk alone does nothing on its own).
+5. **On failure:** leave the existing `graph.obj` and the running
+   backend untouched, log the failure (cron's own mail-on-error, or a
+   line to the system journal), exit non-zero. The site keeps serving
+   last week's (still working) data rather than going down over a bad
+   refresh.
+
+**Known risk: memory contention.** The graph build needs `-Xmx8g`
+(confirmed locally); the VM has 12 GB total, and the live serving
+backend also needs real heap to hold the graph and handle requests
+concurrently. Running both at once risks memory pressure or the
+Linux OOM-killer picking a victim. Scheduling the job at 03:00
+Europe/Copenhagen (this site's real, low-traffic hours) is the accepted
+mitigation for a personal, low-traffic site — not a hard guarantee,
+but a reasonable one given the cost of a fancier fix (e.g. a larger VM,
+or building on a separate, temporary instance) isn't justified here.
+
+**Initial graph.** The very first `terraform apply` has no `graph.obj`
+yet — the plan needs a synchronous first run of the same
+`otp-graph-builder` image (a `null_resource` provisioner, conceptually
+replacing today's "upload a pre-built file over SCP" step) before the
+serving container ever starts, not just a wait for the first Monday's
+cron tick.
 
 ### 2. OCI Container Registry (OCIR) — new
 
@@ -123,10 +234,16 @@ Copied from `bikebus/terraform-oci/` and changed:
   `remote-exec` changes from `docker run <stock OTP image>` to
   `docker login arn.ocir.io` (using the auth token, passed as a sensitive
   Terraform variable) + `docker pull arn.ocir.io/axy3etqux7lj/otp-server-ui:<tag>`
-  + `docker run -d --name otp-server-ui --restart unless-stopped -p 127.0.0.1:8081:8080 -e GOOGLE_PLACES_API_KEY=... <image>`.
-  No graph/router-config file upload step is needed here anymore — the
-  graph is baked into the image itself (see Dockerfile, above), not
-  mounted from the host.
+  + (a new, synchronous one-time step) running the `otp-graph-builder`
+  image to produce the *initial* `/home/ubuntu/otp-graph/graph.obj` (see
+  "Graph refresh," above — the ongoing weekly refresh is cloud-init's
+  cron job, not Terraform's concern after this first run) + `docker run
+  -d --name otp-server-ui --restart unless-stopped -p
+  127.0.0.1:8081:8080 -v /home/ubuntu/otp-graph:/graph:ro -e
+  GRAPH_FILE_PATH=/graph/graph.obj -e GOOGLE_PLACES_API_KEY=... <image>`.
+  No SCP file-upload provisioner is needed anymore — both the original
+  stock-OTP graph upload and this project's own graph are produced
+  on-VM now, not pushed from the developer's machine.
 - **`network.tf`:** security list drops the old `8080` ingress rule, adds
   `80` and `443`. SSH (`22`) stays, for the registry-login + container
   restart provisioner.
@@ -138,10 +255,13 @@ Copied from `bikebus/terraform-oci/` and changed:
   in a 403, no other info given"). The host-level `iptables` rules in
   `runcmd` open 80/443 instead of 8080 (the existing comment about two
   separate firewalls — OCI security list *and* host iptables — still
-  applies and gets the same treatment for the new ports).
+  applies and gets the same treatment for the new ports). Also installs
+  the weekly refresh script + its `/etc/cron.d/otp-graph-refresh` entry
+  (see "Graph refresh," above).
 - **`variables.tf`:** drops `local_graph_path`/`local_router_config_path`/
-  `otp_image`/`otp_java_opts` (no longer relevant — baked into the image),
-  adds `otp_image_tag` (which OCIR tag to deploy), `ocir_auth_token`
+  `otp_image`/`otp_java_opts` (no longer relevant — nothing is uploaded
+  from the developer's machine anymore), adds `otp_image_tag` /
+  `graph_builder_image_tag` (which OCIR tags to deploy), `ocir_auth_token`
   (sensitive), and `google_places_api_key` (sensitive, new — this
   project's own backend needs it, unlike stock OTP).
 - **`outputs.tf`:** `endpoint` changes to
@@ -185,6 +305,14 @@ for during planning, not expected in the normal update path above).
   already correct above, so this is not expected to trigger, but worth a
   real verification step during planning (first real `terraform apply`
   against the new Caddyfile).
+- **Weekly graph refresh failure** (upstream Geofabrik/Rejseplanen
+  unreachable, a malformed download, an OOM during the `-Xmx8g` build,
+  disk full, etc.): the refresh script's own validation step (exit code +
+  file-exists + sane-size check) catches it before anything about the
+  live site changes — no atomic rename, no container restart, the site
+  keeps serving last week's graph. The failure itself is logged (cron
+  mail-on-error / system journal) for the one human who'd ever read it,
+  not surfaced to any site visitor in any way.
 
 ## Testing
 
@@ -205,6 +333,18 @@ for during planning, not expected in the normal update path above).
     real `index.html`, not a 404) — this project's backend serves both,
     unlike the old bare-OTP deployment, so this is a genuinely new check,
     not just a port of an old one.
+- **Graph-builder image, before it's ever wired into cron:** run it
+  standalone (`docker run --rm -v <tmp dir>:/output
+  otp-graph-builder:<tag>`) and confirm it produces a real, loadable
+  `graph.obj` from freshly-downloaded sources — the same acceptance check
+  `docs/graph-build.md` already established (loads via
+  `SerializedGraphObject.load`, correct `otp.serialization.version.id`)
+  applies here, now against freshly-downloaded data rather than
+  whatever was on disk locally.
+- **The refresh script's failure path**, deliberately exercised once:
+  point it at a sources URL that 404s (or similar) and confirm the live
+  `graph.obj` and the running backend container are both left untouched,
+  and the script exits non-zero.
 
 ## Open Questions for the Implementation Plan
 
@@ -234,3 +374,20 @@ implementation:)
    archived, or left in place** once this repo's own copy is live and
    verified — a decision for whoever reviews the implementation plan, not
    guessed here.
+5. **Exact Gradle module layout for the promoted `graph-builder/`.**
+   `.tools/graph-builder/build.gradle.kts` depends on this repo's other
+   modules as flat `files(...)` jar dependencies (built separately,
+   referenced by path) rather than real Gradle project dependencies
+   (`project(":otp-routing")` etc.) — confirm during planning whether to
+   convert these to proper project dependencies now that it's a real
+   module in the same Gradle reactor, or keep the existing jar-file
+   pattern unchanged (lower-risk, since it's already proven to work).
+6. **Whether to keep the download step inside the Java tool itself** (a
+   small addition to the promoted module) **or as a shell step in the
+   `graph-builder/Dockerfile`/entrypoint script** wrapping the existing
+   `./gradlew run --args=...` invocation unchanged. The latter touches
+   less of the existing, already-proven driver code.
+7. **The exact validation thresholds** for "did the build actually
+   succeed" (a minimum file size, confirmed against the known real
+   `denmark-graph.obj`'s own size as a reference point) — a concrete
+   number belongs in the plan, not guessed here.
