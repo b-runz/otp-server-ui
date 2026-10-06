@@ -24,10 +24,18 @@ const TIME_MODE_OPTIONS: Array<[TimeMode, string]> = [
   ["arrive_by", "Arrive by"],
 ];
 
-function toDateTimeLocalValue(iso: string): string {
+function pad(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function toDateValue(iso: string): string {
   const date = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function toTimeValue(iso: string): string {
+  const date = new Date(iso);
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function renderFavoriteStar(
@@ -63,10 +71,13 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   const modeToggle = root.querySelector<HTMLElement>("#mode-toggle")!;
   const timeToggle = root.querySelector<HTMLElement>("#time-toggle")!;
   const swapButton = root.querySelector<HTMLButtonElement>("#swap-button")!;
-  const dateTimeInput = root.querySelector<HTMLInputElement>("#datetime-input")!;
+  const dateInput = root.querySelector<HTMLInputElement>("#date-input")!;
+  const timeInput = root.querySelector<HTMLInputElement>("#time-input")!;
   const preferHubsCheckbox = root.querySelector<HTMLInputElement>("#prefer-hubs-checkbox")!;
   const fromFavoriteStar = root.querySelector<HTMLButtonElement>("#from-favorite-star")!;
   const toFavoriteStar = root.querySelector<HTMLButtonElement>("#to-favorite-star")!;
+  const fromClear = root.querySelector<HTMLButtonElement>("#from-clear")!;
+  const toClear = root.querySelector<HTMLButtonElement>("#to-clear")!;
 
   if (fromInput.value !== state.from.query) fromInput.value = state.from.query;
   if (toInput.value !== state.to.query) toInput.value = state.to.query;
@@ -74,8 +85,10 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   renderFavoriteStar(toFavoriteStar, state.to.resolved, state.favorites, () => handlers.onToggleFavorite("to"));
   preferHubsCheckbox.checked = state.preferHubs;
 
-  const expectedDateTimeValue = toDateTimeLocalValue(state.dateTimeIso);
-  if (dateTimeInput.value !== expectedDateTimeValue) dateTimeInput.value = expectedDateTimeValue;
+  const expectedDateValue = toDateValue(state.dateTimeIso);
+  if (dateInput.value !== expectedDateValue) dateInput.value = expectedDateValue;
+  const expectedTimeValue = toTimeValue(state.dateTimeIso);
+  if (timeInput.value !== expectedTimeValue) timeInput.value = expectedTimeValue;
 
   renderToggle(modeToggle, SEARCH_MODE_OPTIONS, state.searchMode, handlers.onSearchModeChange);
   renderToggle(timeToggle, TIME_MODE_OPTIONS, state.timeMode, handlers.onTimeModeChange);
@@ -87,11 +100,23 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   toInput.onfocus = () => handlers.onToFocusChanged(true);
   toInput.onblur = () => handlers.onToFocusChanged(false);
   swapButton.onclick = () => handlers.onSwap();
-  dateTimeInput.onchange = () => {
-    if (!dateTimeInput.value) return;
-    const date = new Date(dateTimeInput.value);
+  fromClear.onclick = () => {
+    fromInput.value = "";
+    handlers.onFromQueryChanged("");
+  };
+  toClear.onclick = () => {
+    toInput.value = "";
+    handlers.onToQueryChanged("");
+  };
+
+  const onDateOrTimeChanged = () => {
+    if (!dateInput.value || !timeInput.value) return;
+    const date = new Date(`${dateInput.value}T${timeInput.value}`);
     if (Number.isNaN(date.getTime())) return;
     handlers.onDateTimeChanged(date.toISOString());
   };
+  dateInput.onchange = onDateOrTimeChanged;
+  timeInput.onchange = onDateOrTimeChanged;
+
   preferHubsCheckbox.onchange = () => handlers.onPreferHubsChange(preferHubsCheckbox.checked);
 }

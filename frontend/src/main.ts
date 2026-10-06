@@ -73,12 +73,14 @@ export function mountApp(root: HTMLElement): void {
       onSelectSuggestion: (candidate) => onSelectSuggestion("from", candidate),
       onSelectSaved: (place) => onSelectSaved("from", place),
       onAddHouseNumber: (candidate) => onAddHouseNumber("from", candidate),
+      onToggleFavoritePlace: (place) => onToggleFavoritePlace(place),
     }, fieldFocused.from);
     const toList = root.querySelector<HTMLUListElement>("#to-suggestions")!;
     renderSuggestions(toList, state.to.suggestions, { favorites: favoritesSortedForPicker(state.favorites), recents: state.recents }, {
       onSelectSuggestion: (candidate) => onSelectSuggestion("to", candidate),
       onSelectSaved: (place) => onSelectSaved("to", place),
       onAddHouseNumber: (candidate) => onAddHouseNumber("to", candidate),
+      onToggleFavoritePlace: (place) => onToggleFavoritePlace(place),
     }, fieldFocused.to);
 
     const errorBanner = root.querySelector<HTMLElement>("#error-banner")!;
@@ -150,7 +152,14 @@ export function mountApp(root: HTMLElement): void {
   function onToggleFavorite(field: "from" | "to"): void {
     const resolved = state[field].resolved;
     if (resolved == null) return;
-    const { favorites, recents } = toggleFavorite(state.favorites, state.recents, resolved.placeId, resolved.label, resolved.lat, resolved.lon);
+    onToggleFavoritePlace(resolved);
+  }
+
+  // Toggling a star in the suggestions dropdown (on a live suggestion or a saved-place row) just
+  // changes that place's favorite status -- it never selects/resolves it as the field's value,
+  // unlike tapping the row itself.
+  function onToggleFavoritePlace(place: { placeId: string; label: string; lat: number; lon: number }): void {
+    const { favorites, recents } = toggleFavorite(state.favorites, state.recents, place.placeId, place.label, place.lat, place.lon);
     saveFavorites(favorites);
     saveRecents(recents);
     update({ ...state, favorites, recents });

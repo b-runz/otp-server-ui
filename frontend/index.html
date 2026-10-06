@@ -10,32 +10,43 @@
   <main id="app">
     <h1>Trip Planner</h1>
     <form id="trip-form" novalidate>
-      <div class="address-field">
-        <label for="from-input">From</label>
-        <input id="from-input" type="text" autocomplete="off" />
-        <button type="button" id="from-favorite-star" class="favorite-star" hidden aria-label="Toggle favorite"></button>
-        <ul id="from-suggestions" class="suggestions" hidden></ul>
+      <fieldset id="mode-toggle" class="toggle-group"><legend>Mode</legend></fieldset>
+      <fieldset id="time-toggle" class="toggle-group"><legend>Time</legend></fieldset>
+
+      <div class="datetime-row">
+        <input id="date-input" type="date" aria-label="Date" />
+        <input id="time-input" type="time" aria-label="Time" />
       </div>
 
-      <button type="button" id="swap-button" aria-label="Swap From and To">⇅ Swap</button>
+      <div class="address-fields">
+        <div class="address-field">
+          <button type="button" id="from-favorite-star" class="favorite-star" hidden aria-label="Toggle favorite"></button>
+          <label for="from-input">From</label>
+          <input id="from-input" type="text" autocomplete="off" />
+          <button type="button" id="from-clear" class="clear-field" aria-label="Clear From">✕</button>
+          <ul id="from-suggestions" class="suggestions" hidden></ul>
+        </div>
 
-      <div class="address-field">
-        <label for="to-input">To</label>
-        <input id="to-input" type="text" autocomplete="off" />
-        <button type="button" id="to-favorite-star" class="favorite-star" hidden aria-label="Toggle favorite"></button>
-        <ul id="to-suggestions" class="suggestions" hidden></ul>
+        <div class="address-field">
+          <button type="button" id="to-favorite-star" class="favorite-star" hidden aria-label="Toggle favorite"></button>
+          <label for="to-input">To</label>
+          <input id="to-input" type="text" autocomplete="off" />
+          <button type="button" id="to-clear" class="clear-field" aria-label="Clear To">✕</button>
+          <button type="button" id="swap-button" class="swap-button" aria-label="Swap From and To">⇅</button>
+          <ul id="to-suggestions" class="suggestions" hidden></ul>
+        </div>
       </div>
 
-      <fieldset id="mode-toggle"><legend>Mode</legend></fieldset>
-      <fieldset id="time-toggle"><legend>Time</legend></fieldset>
+      <label class="switch-row" for="prefer-hubs-checkbox">
+        Prefer transit hubs
+        <span class="switch">
+          <input type="checkbox" id="prefer-hubs-checkbox" />
+          <span class="switch-track" aria-hidden="true"></span>
+        </span>
+      </label>
 
-      <label for="datetime-input">Date &amp; time</label>
-      <input id="datetime-input" type="datetime-local" />
-
-      <label><input type="checkbox" id="prefer-hubs-checkbox" /> Prefer transit hubs</label>
-
-      <button type="submit" id="search-button">Search</button>
-      <button type="button" id="drop-me-off-button">Drop me off</button>
+      <button type="submit" id="search-button" class="button-primary">Search</button>
+      <button type="button" id="drop-me-off-button" class="button-outline">Drop me off</button>
     </form>
 
     <div id="error-banner" role="alert" hidden></div>

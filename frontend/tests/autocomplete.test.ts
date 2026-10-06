@@ -11,7 +11,7 @@ function freshList(): HTMLUListElement {
 const streetSuggestion: GeocodeCandidate = { placeId: "p1", label: "Langelandsgade", lat: 1, lon: 2, isStreet: true };
 const addressSuggestion: GeocodeCandidate = { placeId: "p2", label: "Langelandsgade 1, Aarhus", lat: 1, lon: 2, isStreet: false };
 
-const noopHandlers = { onSelectSuggestion: () => {}, onSelectSaved: () => {}, onAddHouseNumber: () => {} };
+const noopHandlers = { onSelectSuggestion: () => {}, onSelectSaved: () => {}, onAddHouseNumber: () => {}, onToggleFavoritePlace: () => {} };
 
 test("renders an empty list cleanly when there are no suggestions and no favorites/recents", () => {
   const list = freshList();
@@ -71,4 +71,41 @@ test("shows once focused, with the same content that was hidden before", () => {
   renderSuggestions(list, [], { favorites: [favorite], recents: [] }, noopHandlers, true);
   expect(list.hidden).toBe(false);
   expect(list.querySelector(".saved-place-row")?.textContent).toContain("Home");
+});
+
+test("each suggestion row has its own favorite star, filled only if it's already a favorite", () => {
+  const list = freshList();
+  const favorite: SavedPlace = { placeId: "p1", label: "Langelandsgade", lat: 1, lon: 2, rank: 0 };
+  renderSuggestions(list, [streetSuggestion, addressSuggestion], { favorites: [favorite], recents: [] }, noopHandlers, true);
+  const rows = [...list.querySelectorAll(".suggestion-row")];
+  expect(rows[0].querySelector(".favorite-star")?.textContent).toBe("★"); // p1 is favorited
+  expect(rows[1].querySelector(".favorite-star")?.textContent).toBe("☆"); // p2 is not
+});
+
+test("clicking a suggestion row's star calls onToggleFavoritePlace, not onSelectSuggestion, and doesn't bubble", () => {
+  const list = freshList();
+  const onSelectSuggestion = mock((_c: GeocodeCandidate) => {});
+  const onToggleFavoritePlace = mock((_p: { placeId: string }) => {});
+  renderSuggestions(list, [streetSuggestion], { favorites: [], recents: [] }, { ...noopHandlers, onSelectSuggestion, onToggleFavoritePlace }, true);
+  const star = list.querySelector<HTMLElement>(".suggestion-row .favorite-star")!;
+  star.dispatchEvent(new Event("click", { bubbles: true }));
+  expect(onToggleFavoritePlace).toHaveBeenCalledWith(streetSuggestion);
+  expect(onSelectSuggestion).not.toHaveBeenCalled();
+});
+
+test("a favorite row's star is filled; a recent (not yet favorited) row's star is outline; both toggle via onToggleFavoritePlace without selecting", () => {
+  const list = freshList();
+  const onSelectSaved = mock((_p: SavedPlace) => {});
+  const onToggleFavoritePlace = mock((_p: { placeId: string }) => {});
+  const favorite: SavedPlace = { placeId: "fav1", label: "Home", lat: 0, lon: 0, rank: 1 };
+  const recent: SavedPlace = { placeId: "rec1", label: "Work", lat: 0, lon: 0, rank: 0 };
+  renderSuggestions(list, [], { favorites: [favorite], recents: [recent] }, { ...noopHandlers, onSelectSaved, onToggleFavoritePlace }, true);
+  const rows = [...list.querySelectorAll(".saved-place-row")];
+  expect(rows[0].querySelector(".favorite-star")?.textContent).toBe("★"); // Home: a favorite
+  expect(rows[1].querySelector(".favorite-star")?.textContent).toBe("☆"); // Work: only a recent
+
+  const star = rows[0].querySelector<HTMLElement>(".favorite-star")!;
+  star.dispatchEvent(new Event("click", { bubbles: true }));
+  expect(onToggleFavoritePlace).toHaveBeenCalledWith(favorite);
+  expect(onSelectSaved).not.toHaveBeenCalled();
 });

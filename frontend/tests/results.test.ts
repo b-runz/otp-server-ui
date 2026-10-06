@@ -66,15 +66,15 @@ test("an itinerary card's legs start collapsed and expand on clicking Details", 
   const legsList = root.querySelector<HTMLElement>("ul.legs")!;
   const detailsButton = root.querySelector<HTMLButtonElement>(".details-toggle")!;
   expect(legsList.hidden).toBe(true);
-  expect(detailsButton.textContent).toBe("Details ▸");
+  expect(detailsButton.textContent).toBe("⌄");
 
   detailsButton.dispatchEvent(new Event("click", { bubbles: true }));
   expect(legsList.hidden).toBe(false);
-  expect(detailsButton.textContent).toBe("Details ▾");
+  expect(detailsButton.textContent).toBe("⌃");
 
   detailsButton.dispatchEvent(new Event("click", { bubbles: true }));
   expect(legsList.hidden).toBe(true);
-  expect(detailsButton.textContent).toBe("Details ▸");
+  expect(detailsButton.textContent).toBe("⌄");
 });
 
 test("HTML special characters in place names and hub notices are escaped, not rendered as markup", () => {

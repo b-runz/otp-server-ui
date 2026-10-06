@@ -23,8 +23,10 @@ function legRowHtml(leg: LegDto): string {
   return `
     <li class="leg">
       <span class="leg-icon" aria-hidden="true">${iconForMode(leg.mode)}</span>
-      <span class="leg-headline">${escapeHtml(leg.fromName ?? "?")} → ${escapeHtml(leg.toName ?? "?")}</span>
-      ${subtitle ? `<span class="leg-subtitle">${subtitle}</span>` : ""}
+      <span class="leg-text">
+        <span class="leg-headline">${escapeHtml(leg.fromName ?? "?")} → ${escapeHtml(leg.toName ?? "?")}</span>
+        ${subtitle ? `<span class="leg-subtitle">${subtitle}</span>` : ""}
+      </span>
       <a class="leg-maps-link" href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Maps</a>
     </li>
   `;
@@ -50,7 +52,7 @@ function itineraryCardHtml(itinerary: ItineraryDto): string {
     <li class="itinerary-card">
       <p class="itinerary-time">${TIME_FORMATTER.format(new Date(departureMillis))} → ${TIME_FORMATTER.format(new Date(arrivalMillis))}</p>
       <p class="itinerary-duration">${formatDuration(totalDurationSeconds)}</p>
-      <button type="button" class="details-toggle">Details ▸</button>
+      <button type="button" class="details-toggle" aria-label="Show details">⌄</button>
       <ul class="legs" hidden>${itinerary.legs.map(legRowHtml).join("")}</ul>
       ${badges.join("")}
     </li>
@@ -66,7 +68,7 @@ function wireDetailsToggles(root: HTMLElement): void {
     button.addEventListener("click", () => {
       const legsList = button.nextElementSibling as HTMLElement;
       legsList.hidden = !legsList.hidden;
-      button.textContent = legsList.hidden ? "Details ▸" : "Details ▾";
+      button.textContent = legsList.hidden ? "⌄" : "⌃";
     });
   }
 }

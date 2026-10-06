@@ -6,12 +6,21 @@ import type { SavedPlace } from "../src/storage";
 function freshRoot(): HTMLElement {
   document.body.innerHTML = `
     <form id="trip-form">
-      <div class="address-field"><input id="from-input" /><button type="button" id="from-favorite-star"></button></div>
-      <button type="button" id="swap-button"></button>
-      <div class="address-field"><input id="to-input" /><button type="button" id="to-favorite-star"></button></div>
       <fieldset id="mode-toggle"></fieldset>
       <fieldset id="time-toggle"></fieldset>
-      <input id="datetime-input" type="datetime-local" />
+      <input id="date-input" type="date" />
+      <input id="time-input" type="time" />
+      <div class="address-field">
+        <input id="from-input" />
+        <button type="button" id="from-favorite-star"></button>
+        <button type="button" id="from-clear"></button>
+      </div>
+      <div class="address-field">
+        <input id="to-input" />
+        <button type="button" id="to-favorite-star"></button>
+        <button type="button" id="to-clear"></button>
+        <button type="button" id="swap-button"></button>
+      </div>
       <input type="checkbox" id="prefer-hubs-checkbox" />
     </form>
   `;
@@ -115,4 +124,53 @@ test("focusing and blurring the to-input calls onToFocusChanged, independent of 
   input.dispatchEvent(new Event("focus", { bubbles: true }));
   expect(onToFocusChanged).toHaveBeenCalledWith(true);
   expect(onFromFocusChanged).not.toHaveBeenCalled();
+});
+
+test("clicking the from-clear button clears the input and calls onFromQueryChanged with an empty string", () => {
+  const root = freshRoot();
+  const onFromQueryChanged = mock((_q: string) => {});
+  const state = { ...createInitialState(), from: { query: "Langelandsgade", resolved: null, suggestions: [] } };
+  renderForm(root, state, { ...noopHandlers(), onFromQueryChanged });
+  const input = root.querySelector<HTMLInputElement>("#from-input")!;
+  expect(input.value).toBe("Langelandsgade");
+  root.querySelector<HTMLButtonElement>("#from-clear")!.dispatchEvent(new Event("click", { bubbles: true }));
+  expect(onFromQueryChanged).toHaveBeenCalledWith("");
+  expect(input.value).toBe("");
+});
+
+test("clicking the to-clear button clears the input and calls onToQueryChanged with an empty string", () => {
+  const root = freshRoot();
+  const onToQueryChanged = mock((_q: string) => {});
+  const state = { ...createInitialState(), to: { query: "Odder", resolved: null, suggestions: [] } };
+  renderForm(root, state, { ...noopHandlers(), onToQueryChanged });
+  root.querySelector<HTMLButtonElement>("#to-clear")!.dispatchEvent(new Event("click", { bubbles: true }));
+  expect(onToQueryChanged).toHaveBeenCalledWith("");
+});
+
+test("the date and time inputs are synced from state.dateTimeIso as separate fields", () => {
+  const root = freshRoot();
+  const state = { ...createInitialState(), dateTimeIso: new Date(2026, 8, 30, 12, 58).toISOString() };
+  renderForm(root, state, noopHandlers());
+  expect(root.querySelector<HTMLInputElement>("#date-input")!.value).toBe("2026-09-30");
+  expect(root.querySelector<HTMLInputElement>("#time-input")!.value).toBe("12:58");
+});
+
+test("changing the date or time input combines both into one ISO string passed to onDateTimeChanged", () => {
+  const root = freshRoot();
+  const onDateTimeChanged = mock((_iso: string) => {});
+  const state = { ...createInitialState(), dateTimeIso: new Date(2026, 8, 30, 12, 58).toISOString() };
+  renderForm(root, state, { ...noopHandlers(), onDateTimeChanged });
+
+  const dateInput = root.querySelector<HTMLInputElement>("#date-input")!;
+  dateInput.value = "2026-10-01";
+  dateInput.dispatchEvent(new Event("change", { bubbles: true }));
+
+  expect(onDateTimeChanged).toHaveBeenCalledTimes(1);
+  const isoArg = onDateTimeChanged.mock.calls[0]![0] as string;
+  const combined = new Date(isoArg);
+  expect(combined.getFullYear()).toBe(2026);
+  expect(combined.getMonth()).toBe(9); // October
+  expect(combined.getDate()).toBe(1);
+  expect(combined.getHours()).toBe(12);
+  expect(combined.getMinutes()).toBe(58);
 });

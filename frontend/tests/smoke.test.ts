@@ -5,12 +5,12 @@ function freshDocument(): HTMLElement {
   document.body.innerHTML = `
     <main id="app">
       <form id="trip-form">
-        <div class="address-field"><input id="from-input" /><button type="button" id="from-favorite-star" hidden></button><ul id="from-suggestions" class="suggestions" hidden></ul></div>
-        <button type="button" id="swap-button"></button>
-        <div class="address-field"><input id="to-input" /><button type="button" id="to-favorite-star" hidden></button><ul id="to-suggestions" class="suggestions" hidden></ul></div>
         <fieldset id="mode-toggle"></fieldset>
         <fieldset id="time-toggle"></fieldset>
-        <input id="datetime-input" type="datetime-local" />
+        <input id="date-input" type="date" />
+        <input id="time-input" type="time" />
+        <div class="address-field"><input id="from-input" /><button type="button" id="from-favorite-star" hidden></button><button type="button" id="from-clear"></button><ul id="from-suggestions" class="suggestions" hidden></ul></div>
+        <div class="address-field"><input id="to-input" /><button type="button" id="to-favorite-star" hidden></button><button type="button" id="to-clear"></button><button type="button" id="swap-button"></button><ul id="to-suggestions" class="suggestions" hidden></ul></div>
         <input type="checkbox" id="prefer-hubs-checkbox" />
         <button type="submit" id="search-button">Search</button>
         <button type="button" id="drop-me-off-button">Drop me off</button>
