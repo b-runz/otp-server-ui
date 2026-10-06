@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+OUT_DIR=/home/ubuntu/otp-graph
+MIN_SIZE_BYTES=$((200 * 1024 * 1024))
+IMAGE="ghcr.io/${github_owner}/otp-graph-builder:${graph_builder_image_tag}"
+
+echo "$(date -Iseconds) otp-graph-refresh: starting"
+
+docker pull "$IMAGE"
+rm -f "$OUT_DIR/graph.obj.new"
+docker run --rm -v "$OUT_DIR":/output "$IMAGE"
+
+if [ ! -f "$OUT_DIR/graph.obj.new" ]; then
+  echo "$(date -Iseconds) otp-graph-refresh: FAILED -- no graph.obj.new produced, leaving existing graph in place" >&2
+  exit 1
+fi
+
+actual_size=$(stat -c%s "$OUT_DIR/graph.obj.new")
+if [ "$actual_size" -lt "$MIN_SIZE_BYTES" ]; then
+  echo "$(date -Iseconds) otp-graph-refresh: FAILED -- graph.obj.new is only $actual_size bytes (want >= $MIN_SIZE_BYTES), discarding" >&2
+  rm -f "$OUT_DIR/graph.obj.new"
+  exit 1
+fi
+
+mv "$OUT_DIR/graph.obj.new" "$OUT_DIR/graph.obj"
+docker restart otp-server-ui
+echo "$(date -Iseconds) otp-graph-refresh: success, backend restarted with fresh graph"
