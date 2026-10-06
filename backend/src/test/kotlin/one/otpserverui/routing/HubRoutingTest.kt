@@ -63,12 +63,12 @@ class HubRoutingTest {
         val destination = WgsCoordinate(56.165518, 10.185262).moveEastMeters(200.0).moveNorthMeters(-200.0)
         val departure = ZonedDateTime.of(2026, 9, 13, 16, 0, 0, 0, ZoneId.of("Europe/Copenhagen")).toInstant()
 
-        val itinerary = ParkAndRideFinder.search(engine, origin, destination, departure)
+        val itinerary = ParkAndRideFinder.search(engine, origin, destination, departure, maxTransfers = 0)
         assertThat(itinerary).isNotNull()
 
-        // ParkAndRideFinder caps MAX_TRANSFERS at 1 -- raptor's own "zero transfers" round limit,
-        // per that object's own comment -- so this real itinerary has exactly one transit leg and
-        // never two adjacent ones. findHubSplit only ever matches a transit-to-transit transfer,
+        // maxTransfers = 0 caps raptor at its own "zero transfers" round limit (see
+        // ParkAndRideFinder.search's own KDoc), so this real itinerary has exactly one transit leg
+        // and never two adjacent ones. findHubSplit only ever matches a transit-to-transit transfer,
         // so null is the real, honest result here, not a fabricated assertion.
         val transitLegCount = itinerary!!.legs().count { it.isTransitLeg }
         assertThat(transitLegCount).isEqualTo(1)
@@ -88,7 +88,7 @@ class HubRoutingTest {
         val destination = WgsCoordinate(56.165518, 10.185262).moveEastMeters(200.0).moveNorthMeters(-200.0)
         val departure = ZonedDateTime.of(2026, 9, 13, 16, 0, 0, 0, ZoneId.of("Europe/Copenhagen")).toInstant()
 
-        val itinerary = ParkAndRideFinder.search(engine, origin, destination, departure)
+        val itinerary = ParkAndRideFinder.search(engine, origin, destination, departure, maxTransfers = 0)
         assertThat(itinerary).isNotNull()
 
         // Reusing the same real itinerary as both "baseline" and "stitched" gives a real,
@@ -110,7 +110,7 @@ class HubRoutingTest {
         val destination = WgsCoordinate(56.165518, 10.185262).moveEastMeters(200.0).moveNorthMeters(-200.0)
         val departure = ZonedDateTime.of(2026, 9, 13, 16, 0, 0, 0, ZoneId.of("Europe/Copenhagen")).toInstant()
 
-        val itinerary = ParkAndRideFinder.search(engine, origin, destination, departure)
+        val itinerary = ParkAndRideFinder.search(engine, origin, destination, departure, maxTransfers = 0)
         assertThat(itinerary).isNotNull()
         val baseline = listOf(itinerary!!)
 

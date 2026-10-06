@@ -1,7 +1,7 @@
 import { search, nearbyRoutes, connect, geocode } from "./api";
 import { isApiError, type GeocodeCandidate, type NearbyRouteDto } from "./types";
 import {
-  createInitialState, setSearchMode, setTimeMode, setPreferHubs, setDateTimeIso,
+  createInitialState, setSearchMode, setTimeMode, setPreferHubs, setMaxTransfers, setDateTimeIso,
   swapFromTo, setFieldQuery, setFieldSuggestions, resolveField,
   setItineraries, setError, setNearbyRoutes, setNearbyRoutesError,
   setConnectResult, setConnectError, type AppState,
@@ -59,6 +59,7 @@ export function mountApp(root: HTMLElement): void {
       onSearchModeChange: (mode) => update(setSearchMode(state, mode)),
       onTimeModeChange: (mode) => update(setTimeMode(state, mode)),
       onPreferHubsChange: (value) => update(setPreferHubs(state, value)),
+      onMaxTransfersChange: (value) => update(setMaxTransfers(state, value)),
       onSwap: () => update(swapFromTo(state)),
       onFromQueryChanged: (query) => onFieldQueryChanged("from", query),
       onToQueryChanged: (query) => onFieldQueryChanged("to", query),
@@ -177,6 +178,7 @@ export function mountApp(root: HTMLElement): void {
       destinationLat: state.to.resolved.lat, destinationLon: state.to.resolved.lon,
       routeGtfsId: route.routeGtfsId, routeStopIds: route.stopIds,
       timeMode: state.timeMode, dateTimeIso: state.dateTimeIso, preferHubs: state.preferHubs,
+      maxTransfers: state.maxTransfers,
     });
     if (requestId !== connectRequestIds.get(route.routeGtfsId)) return; // a newer connect request superseded this one
     if (isApiError(result)) {
@@ -201,6 +203,7 @@ export function mountApp(root: HTMLElement): void {
         originLat: state.from.resolved.lat, originLon: state.from.resolved.lon,
         destinationLat: state.to.resolved.lat, destinationLon: state.to.resolved.lon,
         dateTimeIso: state.dateTimeIso, preferHubs: state.preferHubs,
+        maxTransfers: state.maxTransfers,
       });
       if (requestId !== searchRequestId) return; // a newer search superseded this one
       if (isApiError(result)) {

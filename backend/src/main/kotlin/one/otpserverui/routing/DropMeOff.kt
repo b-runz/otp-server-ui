@@ -72,8 +72,9 @@ fun connectToRoute(
     timeMode: TimeMode,
     dateTime: Instant,
     preferHubs: Boolean,
+    maxTransfers: Int? = null,
 ): FlagStopConnectResult? {
-    val plainLegs = connectViaRoute(engine, origin, destination, routeGtfsId, routeStopIds, timeMode, dateTime) ?: return null
+    val plainLegs = connectViaRoute(engine, origin, destination, routeGtfsId, routeStopIds, timeMode, dateTime, maxTransfers) ?: return null
 
     var finalLegs = plainLegs
     var hubName: String? = null
@@ -83,7 +84,7 @@ fun connectToRoute(
             val stitched = runCatching {
                 buildStitchedNearbyItinerary(
                     engine, origin, destination, split.hub, routeGtfsId, routeStopIds,
-                    split.routeOnOriginSide, timeMode, dateTime,
+                    split.routeOnOriginSide, timeMode, dateTime, maxTransfers,
                 )
             }.getOrNull()
             if (stitched != null && stitched.any { it.routeGtfsId == routeGtfsId }) {
@@ -94,7 +95,10 @@ fun connectToRoute(
         }
     }
 
-    val baseline = bringBike(engine, origin, destination, timeMode, dateTime)
+    // Same maxTransfers cap as the constrained search above, so extraRideSeconds compares two
+    // itineraries under the same transfer budget -- an unconstrained baseline here would make the
+    // comparison meaningless whenever the user has actually chosen a finite cap.
+    val baseline = bringBike(engine, origin, destination, timeMode, dateTime, maxTransfers = maxTransfers)
     val extraRideSeconds = baseline.minOfOrNull { it.totalDuration().seconds.toDouble() }
         ?.let { baselineCost -> Itinerary(legs = finalLegs).totalDurationSeconds - baselineCost }
 
@@ -119,10 +123,11 @@ private fun connectViaRoute(
     routeStopIds: List<String>,
     timeMode: TimeMode,
     dateTime: Instant,
+    maxTransfers: Int?,
 ): List<Leg>? {
     val itineraries = bringBike(
         engine, origin, destination, timeMode, dateTime,
-        viaStopIds = routeStopIds, numItineraries = CONNECT_BATCH_SIZE,
+        viaStopIds = routeStopIds, numItineraries = CONNECT_BATCH_SIZE, maxTransfers = maxTransfers,
     ).map { it.toAppItinerary().legs }
     return NearbyRoutesFinder.pickCheapestQualifying(itineraries, routeGtfsId)
 }
@@ -142,16 +147,17 @@ private fun buildStitchedNearbyItinerary(
     routeOnOriginSide: Boolean,
     timeMode: TimeMode,
     dateTime: Instant,
+    maxTransfers: Int?,
 ): List<Leg>? {
     val hubCoordinate = WgsCoordinate(hub.lat, hub.lon)
 
     fun plain(from: WgsCoordinate, to: WgsCoordinate, at: Instant): List<Leg>? =
-        bringBike(engine, from, to, timeMode, at).firstOrNull()?.toAppItinerary()?.legs
+        bringBike(engine, from, to, timeMode, at, maxTransfers = maxTransfers).firstOrNull()?.toAppItinerary()?.legs
 
     fun viaRoute(from: WgsCoordinate, to: WgsCoordinate, at: Instant): List<Leg>? {
         val itineraries = bringBike(
             engine, from, to, timeMode, at,
-            viaStopIds = routeStopIds, numItineraries = CONNECT_BATCH_SIZE,
+            viaStopIds = routeStopIds, numItineraries = CONNECT_BATCH_SIZE, maxTransfers = maxTransfers,
         ).map { it.toAppItinerary().legs }
         return NearbyRoutesFinder.pickCheapestQualifying(itineraries, routeGtfsId)
     }

@@ -22,6 +22,13 @@ function freshRoot(): HTMLElement {
         <button type="button" id="swap-button"></button>
       </div>
       <input type="checkbox" id="prefer-hubs-checkbox" />
+      <select id="max-transfers-select">
+        <option value="">Unlimited</option>
+        <option value="0">0</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+      </select>
     </form>
   `;
   return document.body;
@@ -32,6 +39,7 @@ function noopHandlers() {
     onSearchModeChange: () => {}, onTimeModeChange: () => {}, onPreferHubsChange: () => {},
     onSwap: () => {}, onFromQueryChanged: () => {}, onToQueryChanged: () => {}, onDateTimeChanged: () => {},
     onToggleFavorite: () => {}, onFromFocusChanged: () => {}, onToFocusChanged: () => {},
+    onMaxTransfersChange: () => {},
   };
 }
 
@@ -173,4 +181,38 @@ test("changing the date or time input combines both into one ISO string passed t
   expect(combined.getDate()).toBe(1);
   expect(combined.getHours()).toBe(12);
   expect(combined.getMinutes()).toBe(58);
+});
+
+test("the max-transfers select defaults to Unlimited (empty value) when state.maxTransfers is null", () => {
+  const root = freshRoot();
+  renderForm(root, createInitialState(), noopHandlers());
+  expect(root.querySelector<HTMLSelectElement>("#max-transfers-select")!.value).toBe("");
+});
+
+test("the max-transfers select reflects a finite state.maxTransfers value", () => {
+  const root = freshRoot();
+  const state = { ...createInitialState(), maxTransfers: 2 };
+  renderForm(root, state, noopHandlers());
+  expect(root.querySelector<HTMLSelectElement>("#max-transfers-select")!.value).toBe("2");
+});
+
+test("changing the max-transfers select to a number calls onMaxTransfersChange with that number", () => {
+  const root = freshRoot();
+  const onMaxTransfersChange = mock((_value: number | null) => {});
+  renderForm(root, createInitialState(), { ...noopHandlers(), onMaxTransfersChange });
+  const select = root.querySelector<HTMLSelectElement>("#max-transfers-select")!;
+  select.value = "1";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  expect(onMaxTransfersChange).toHaveBeenCalledWith(1);
+});
+
+test("changing the max-transfers select back to Unlimited calls onMaxTransfersChange with null", () => {
+  const root = freshRoot();
+  const onMaxTransfersChange = mock((_value: number | null) => {});
+  const state = { ...createInitialState(), maxTransfers: 2 };
+  renderForm(root, state, { ...noopHandlers(), onMaxTransfersChange });
+  const select = root.querySelector<HTMLSelectElement>("#max-transfers-select")!;
+  select.value = "";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  expect(onMaxTransfersChange).toHaveBeenCalledWith(null);
 });

@@ -12,6 +12,7 @@ export interface FormHandlers {
   onToggleFavorite: (field: "from" | "to") => void;
   onFromFocusChanged: (focused: boolean) => void;
   onToFocusChanged: (focused: boolean) => void;
+  onMaxTransfersChange: (value: number | null) => void;
 }
 
 const SEARCH_MODE_OPTIONS: Array<[SearchMode, string]> = [
@@ -74,6 +75,7 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   const dateInput = root.querySelector<HTMLInputElement>("#date-input")!;
   const timeInput = root.querySelector<HTMLInputElement>("#time-input")!;
   const preferHubsCheckbox = root.querySelector<HTMLInputElement>("#prefer-hubs-checkbox")!;
+  const maxTransfersSelect = root.querySelector<HTMLSelectElement>("#max-transfers-select")!;
   const fromFavoriteStar = root.querySelector<HTMLButtonElement>("#from-favorite-star")!;
   const toFavoriteStar = root.querySelector<HTMLButtonElement>("#to-favorite-star")!;
   const fromClear = root.querySelector<HTMLButtonElement>("#from-clear")!;
@@ -84,6 +86,8 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   renderFavoriteStar(fromFavoriteStar, state.from.resolved, state.favorites, () => handlers.onToggleFavorite("from"));
   renderFavoriteStar(toFavoriteStar, state.to.resolved, state.favorites, () => handlers.onToggleFavorite("to"));
   preferHubsCheckbox.checked = state.preferHubs;
+  const expectedMaxTransfersValue = state.maxTransfers == null ? "" : String(state.maxTransfers);
+  if (maxTransfersSelect.value !== expectedMaxTransfersValue) maxTransfersSelect.value = expectedMaxTransfersValue;
 
   const expectedDateValue = toDateValue(state.dateTimeIso);
   if (dateInput.value !== expectedDateValue) dateInput.value = expectedDateValue;
@@ -119,4 +123,7 @@ export function renderForm(root: HTMLElement, state: AppState, handlers: FormHan
   timeInput.onchange = onDateOrTimeChanged;
 
   preferHubsCheckbox.onchange = () => handlers.onPreferHubsChange(preferHubsCheckbox.checked);
+  maxTransfersSelect.onchange = () => {
+    handlers.onMaxTransfersChange(maxTransfersSelect.value === "" ? null : Number(maxTransfersSelect.value));
+  };
 }

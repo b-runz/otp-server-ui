@@ -22,6 +22,7 @@ export interface AppState {
   searchMode: SearchMode;
   timeMode: TimeMode;
   preferHubs: boolean;
+  maxTransfers: number | null; // null = unlimited; shared across every search mode
   dateTimeIso: string;
   from: AddressFieldState;
   to: AddressFieldState;
@@ -46,6 +47,7 @@ export function createInitialState(): AppState {
     searchMode: "park_and_ride",
     timeMode: "depart_at",
     preferHubs: false,
+    maxTransfers: null,
     dateTimeIso: new Date().toISOString(),
     from: emptyField(),
     to: emptyField(),
@@ -72,6 +74,10 @@ export function setTimeMode(state: AppState, mode: TimeMode): AppState {
 
 export function setPreferHubs(state: AppState, value: boolean): AppState {
   return { ...state, preferHubs: value };
+}
+
+export function setMaxTransfers(state: AppState, value: number | null): AppState {
+  return { ...state, maxTransfers: value };
 }
 
 export function setDateTimeIso(state: AppState, iso: string): AppState {

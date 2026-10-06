@@ -7,6 +7,7 @@ export interface SearchRequest {
   destinationLon: number;
   dateTimeIso: string;
   preferHubs: boolean;
+  maxTransfers: number | null; // null = unlimited
 }
 
 export interface LegDto {
@@ -59,6 +60,7 @@ export interface ConnectRequest {
   timeMode: "depart_at" | "arrive_by";
   dateTimeIso: string;
   preferHubs: boolean;
+  maxTransfers: number | null; // null = unlimited
 }
 
 export interface FlagStopInfoDto {

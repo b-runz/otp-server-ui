@@ -50,8 +50,9 @@ private fun bringBikeWithHubPreference(
     timeMode: TimeMode,
     dateTime: Instant,
     preferHubs: Boolean,
+    maxTransfers: Int?,
 ): Pair<List<Itinerary>, String?> {
-    val baseline = bringBike(engine, origin, destination, timeMode, dateTime)
+    val baseline = bringBike(engine, origin, destination, timeMode, dateTime, maxTransfers = maxTransfers)
     if (!preferHubs) return baseline to null
     val bestBaseline = baseline.firstOrNull() ?: return baseline to null
     val hub = HubRouting.findHubSplit(hubs, bestBaseline) ?: return baseline to null
@@ -60,13 +61,13 @@ private fun bringBikeWithHubPreference(
     val stitched = runCatching {
         when (timeMode) {
             TimeMode.DEPART_AT -> {
-                val legA = bringBike(engine, origin, hubCoordinate, TimeMode.DEPART_AT, dateTime).firstOrNull() ?: return@runCatching null
-                val legB = bringBike(engine, hubCoordinate, destination, TimeMode.DEPART_AT, legA.endTimeAsInstant()).firstOrNull() ?: return@runCatching null
+                val legA = bringBike(engine, origin, hubCoordinate, TimeMode.DEPART_AT, dateTime, maxTransfers = maxTransfers).firstOrNull() ?: return@runCatching null
+                val legB = bringBike(engine, hubCoordinate, destination, TimeMode.DEPART_AT, legA.endTimeAsInstant(), maxTransfers = maxTransfers).firstOrNull() ?: return@runCatching null
                 stitchItineraries(legA, legB)
             }
             TimeMode.ARRIVE_BY -> {
-                val legB = bringBike(engine, hubCoordinate, destination, TimeMode.ARRIVE_BY, dateTime).firstOrNull() ?: return@runCatching null
-                val legA = bringBike(engine, origin, hubCoordinate, TimeMode.ARRIVE_BY, legB.startTimeAsInstant()).firstOrNull() ?: return@runCatching null
+                val legB = bringBike(engine, hubCoordinate, destination, TimeMode.ARRIVE_BY, dateTime, maxTransfers = maxTransfers).firstOrNull() ?: return@runCatching null
+                val legA = bringBike(engine, origin, hubCoordinate, TimeMode.ARRIVE_BY, legB.startTimeAsInstant(), maxTransfers = maxTransfers).firstOrNull() ?: return@runCatching null
                 stitchItineraries(legA, legB)
             }
         }
@@ -104,8 +105,8 @@ fun Routing.searchRoute(engine: RoutingEngine, hubs: List<TransitHub>) {
 
         val (itineraries, notice) = try {
             when (request.mode) {
-                "park_and_ride" -> listOfNotNull(ParkAndRideFinder.search(engine, origin, destination, dateTime)) to null
-                else -> bringBikeWithHubPreference(engine, hubs, origin, destination, timeMode, dateTime, request.preferHubs)
+                "park_and_ride" -> listOfNotNull(ParkAndRideFinder.search(engine, origin, destination, dateTime, request.maxTransfers)) to null
+                else -> bringBikeWithHubPreference(engine, hubs, origin, destination, timeMode, dateTime, request.preferHubs, request.maxTransfers)
             }
         } catch (e: RoutingValidationException) {
             call.respond(HttpStatusCode.UnprocessableEntity, SearchErrorResponse("no_coverage"))

@@ -276,6 +276,22 @@ button {
   background: var(--accent-text-on-fill);
 }
 
+/* --- Max connections row --- */
+.max-transfers-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.max-transfers-row select {
+  background: var(--card-bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  padding: 0.4rem 0.8rem;
+  font: inherit;
+}
+
 /* --- Primary / outlined pill buttons --- */
 .button-primary,
 .button-outline {

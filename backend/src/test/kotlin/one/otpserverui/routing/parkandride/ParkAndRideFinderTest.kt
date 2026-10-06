@@ -31,7 +31,7 @@ class ParkAndRideFinderTest {
         val destination = WgsCoordinate(56.165518, 10.185262).moveEastMeters(200.0).moveNorthMeters(-200.0)
         val departure = java.time.ZonedDateTime.of(2026, 9, 13, 16, 0, 0, 0, java.time.ZoneId.of("Europe/Copenhagen")).toInstant()
 
-        val itinerary = ParkAndRideFinder.search(engine, origin, destination, departure)
+        val itinerary = ParkAndRideFinder.search(engine, origin, destination, departure, maxTransfers = 0)
 
         assertThat(itinerary).isNotNull()
         assertThat(itinerary!!.legs().any { it.isTransitLeg }).isTrue()
@@ -75,13 +75,29 @@ class ParkAndRideFinderTest {
         )
         assertThat(strictEgress).isEmpty()
 
-        val itinerary = ParkAndRideFinder.search(engine, origin, longWalkDestination, departure)
+        val itinerary = ParkAndRideFinder.search(engine, origin, longWalkDestination, departure, maxTransfers = 0)
 
         assertThat(itinerary).isNotNull()
         assertThat(itinerary!!.legs().last().isTransitLeg).isFalse()
         // The final egress leg's own duration exceeds the strict cap -- direct evidence the
         // fallback-tier egress search (not the strict one) is what produced this leg.
         assertThat(itinerary.legs().last().duration()).isGreaterThan(Duration.ofMinutes(15))
+    }
+
+    @Test
+    fun `maxTransfers = null (unlimited) still finds the known real itinerary`() {
+        val fixturePath = checkNotNull(javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
+        val loaded = GraphLoader.load(fixturePath)
+        val engine = RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
+
+        val origin = WgsCoordinate(56.171798, 10.172087).moveEastMeters(100.0).moveNorthMeters(100.0)
+        val destination = WgsCoordinate(56.165518, 10.185262).moveEastMeters(200.0).moveNorthMeters(-200.0)
+        val departure = java.time.ZonedDateTime.of(2026, 9, 13, 16, 0, 0, 0, java.time.ZoneId.of("Europe/Copenhagen")).toInstant()
+
+        val itinerary = ParkAndRideFinder.search(engine, origin, destination, departure, maxTransfers = null)
+
+        assertThat(itinerary).isNotNull()
+        assertThat(itinerary!!.legs().any { it.isTransitLeg }).isTrue()
     }
 
     @Test
@@ -98,7 +114,7 @@ class ParkAndRideFinderTest {
         // be found. A correct implementation returns null, not a fabricated walk-only result (the
         // exact bug bikebus's own 2026-07-31 spec redesign fixed, ported here verbatim).
         val unreachableOrigin = WgsCoordinate(59.9, 10.7) // Oslo
-        val itinerary = ParkAndRideFinder.search(engine, unreachableOrigin, destination, departure)
+        val itinerary = ParkAndRideFinder.search(engine, unreachableOrigin, destination, departure, maxTransfers = 0)
 
         assertThat(itinerary).isNull()
     }

@@ -33,6 +33,7 @@ data class ConnectRequest(
     val timeMode: String,
     val dateTimeIso: String,
     val preferHubs: Boolean = false,
+    val maxTransfers: Int? = null, // null = unlimited; the "number of connections" UI setting
 )
 
 @Serializable
@@ -88,7 +89,7 @@ fun Routing.dropMeOffRoutes(engine: RoutingEngine, hubs: List<TransitHub>) {
 
         val result = connectToRoute(
             engine, hubs, origin, destination, request.routeGtfsId, request.routeStopIds,
-            timeMode, Instant.parse(request.dateTimeIso), request.preferHubs,
+            timeMode, Instant.parse(request.dateTimeIso), request.preferHubs, request.maxTransfers,
         )
         if (result == null) {
             call.respond(HttpStatusCode.UnprocessableEntity, SearchErrorResponse("unreachable"))

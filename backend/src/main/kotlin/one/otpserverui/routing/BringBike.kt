@@ -51,6 +51,12 @@ import org.opentripplanner.street.model.StreetMode
  * constraint is exactly as "real and reachable" as an empty access/egress reach above, and this
  * function's own contract is to return an empty list for a query with no valid result, not to
  * crash.
+ *
+ * [maxTransfers] is the user-facing "number of connections" setting shared across every search
+ * mode -- `null` (the default) means unlimited, preserving this function's original unconstrained
+ * behavior. A non-null value is translated to raptor's own round-count parameter as
+ * `maxTransfers + 1`; see [one.otpserverui.routing.parkandride.ParkAndRideFinder.search]'s own KDoc
+ * for the full raptor round-counting explanation this mirrors.
  */
 fun bringBike(
     engine: RoutingEngine,
@@ -60,6 +66,7 @@ fun bringBike(
     dateTime: Instant,
     viaStopIds: List<String> = emptyList(),
     numItineraries: Int? = null,
+    maxTransfers: Int? = null,
 ): List<Itinerary> {
     val requestBuilder = engine.requestBuilder()
         .withFrom(GenericLocation.fromCoordinate(origin))
@@ -72,7 +79,12 @@ fun bringBike(
         // (see RoutingEngine.requestBuilder) -- plus a widened search window.
         .withJourney { it.withAllModes(StreetMode.BIKE) }
         .withSearchWindow(Duration.ofHours(12))
-        .withPreferences { preferences -> preferences.withTransfer { transfer -> transfer.withCost(3600) } }
+        .withPreferences { preferences ->
+            preferences.withTransfer { transfer ->
+                transfer.withCost(3600)
+                if (maxTransfers != null) transfer.withMaxTransfers(maxTransfers + 1)
+            }
+        }
     if (viaStopIds.isNotEmpty()) {
         requestBuilder.withViaLocations(listOf(VisitViaLocation(null, null, FeedScopedId.parse(viaStopIds), null)))
     }

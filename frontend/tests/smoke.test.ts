@@ -12,6 +12,7 @@ function freshDocument(): HTMLElement {
         <div class="address-field"><input id="from-input" /><button type="button" id="from-favorite-star" hidden></button><button type="button" id="from-clear"></button><ul id="from-suggestions" class="suggestions" hidden></ul></div>
         <div class="address-field"><input id="to-input" /><button type="button" id="to-favorite-star" hidden></button><button type="button" id="to-clear"></button><button type="button" id="swap-button"></button><ul id="to-suggestions" class="suggestions" hidden></ul></div>
         <input type="checkbox" id="prefer-hubs-checkbox" />
+        <select id="max-transfers-select"><option value="">Unlimited</option><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select>
         <button type="submit" id="search-button">Search</button>
         <button type="button" id="drop-me-off-button">Drop me off</button>
       </form>

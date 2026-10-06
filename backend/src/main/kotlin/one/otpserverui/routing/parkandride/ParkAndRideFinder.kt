@@ -45,18 +45,6 @@ object ParkAndRideFinder {
      */
     private val FALLBACK_WALK_EGRESS: Duration = Duration.ofHours(2)
 
-    // Raptor's own round counting (otp-raptor's RoundTracker/SearchContext.nRounds()) treats
-    // round 0 as access-only and round 1 as the *first* transit boarding (0 transfers); the
-    // number of rounds it will run is `maxNumberOfTransfers + 1`, used as an *exclusive* limit
-    // (hasMoreRounds(): round + 1 < roundMaxLimit). withMaxTransfers(0) therefore yields exactly
-    // one round (round 0), so round 1 -- the first transit leg -- never runs and no transit
-    // itinerary is ever found, on any network. withMaxTransfers(1) yields two rounds (round 0,
-    // then round 1), which is what actually restricts the search to zero-transfer itineraries.
-    // Confirmed empirically against this fixture (originally in Approach A's own file, before it
-    // was deleted): MAX_TRANSFERS = 0 -> 0 raptor paths every time; MAX_TRANSFERS = 1 -> 11 paths,
-    // all with numberOfTransfers() == 0.
-    private const val MAX_TRANSFERS = 1
-
     /**
      * The best itinerary found, or `null` if no bikeable-then-transit path qualifies.
      *
@@ -79,18 +67,37 @@ object ParkAndRideFinder {
      * have a `null`-shaped answer for, so it is deliberately rethrown rather than swallowed into
      * the same `null` as a real dead end.
      */
+    /**
+     * [maxTransfers] is the user-facing "number of connections" setting shared across every search
+     * mode (the spec's own Park & Ride constraint used to hardcode this at 0 -- it is now just this
+     * search's default caller-chosen value like any other mode). `null` means unlimited: no
+     * `withMaxTransfers` call at all, same as [one.otpserverui.routing.bringBike]'s own unconstrained
+     * default. A non-null value is translated to raptor's own round-count parameter as
+     * `maxTransfers + 1`: raptor's round counting (otp-raptor's RoundTracker/SearchContext.nRounds())
+     * treats round 0 as access-only and round 1 as the *first* transit boarding (0 transfers); the
+     * number of rounds it runs is `maxNumberOfTransfers + 1`, used as an *exclusive* limit
+     * (hasMoreRounds(): round + 1 < roundMaxLimit). So `withMaxTransfers(0)` yields exactly one round
+     * (round 0) and no transit itinerary is ever found, on any network, while `withMaxTransfers(1)`
+     * yields two rounds (round 0, then round 1) -- exactly the zero-transfer search this function
+     * used to hardcode. Confirmed empirically against this project's own fixture (originally in
+     * Approach A's own file, before it was deleted): raw raptor value 0 -> 0 paths every time; raw
+     * raptor value 1 -> 11 paths, all with numberOfTransfers() == 0.
+     */
     fun search(
         engine: RoutingEngine,
         origin: WgsCoordinate,
         destination: WgsCoordinate,
         departureTime: Instant,
+        maxTransfers: Int?,
     ): Itinerary? {
         val request = engine.requestBuilder()
             .withFrom(GenericLocation.fromCoordinate(origin))
             .withTo(GenericLocation.fromCoordinate(destination))
             .withDateTime(departureTime)
             .withPreferences { preferences ->
-                preferences.withTransfer { it.withMaxTransfers(MAX_TRANSFERS) }
+                if (maxTransfers != null) {
+                    preferences.withTransfer { it.withMaxTransfers(maxTransfers + 1) }
+                }
             }
             .buildRequest()
 

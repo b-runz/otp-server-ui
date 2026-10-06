@@ -12,6 +12,7 @@ data class SearchRequest(
     val destinationLon: Double,
     val dateTimeIso: String,
     val preferHubs: Boolean = false,
+    val maxTransfers: Int? = null, // null = unlimited; the "number of connections" UI setting
 )
 
 @Serializable

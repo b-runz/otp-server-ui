@@ -15,7 +15,7 @@ test("search posts the request body to /search and parses a success response", a
     const result = await search({
       mode: "bring_bike", timeMode: "depart_at",
       originLat: 56.17, originLon: 10.17, destinationLat: 56.10, destinationLon: 10.17,
-      dateTimeIso: "2026-09-13T14:00:00Z", preferHubs: false,
+      dateTimeIso: "2026-09-13T14:00:00Z", preferHubs: false, maxTransfers: null,
     });
     expect(isApiError(result)).toBe(false);
     if (!isApiError(result)) expect(result.itineraries).toEqual([]);
@@ -32,7 +32,7 @@ test("search surfaces a typed error response instead of throwing", async () => {
     const result = await search({
       mode: "bring_bike", timeMode: "depart_at",
       originLat: 0, originLon: 0, destinationLat: 0, destinationLon: 0,
-      dateTimeIso: "2026-09-13T14:00:00Z", preferHubs: false,
+      dateTimeIso: "2026-09-13T14:00:00Z", preferHubs: false, maxTransfers: null,
     });
     expect(isApiError(result)).toBe(true);
     if (isApiError(result)) expect(result.error).toBe("no_coverage");

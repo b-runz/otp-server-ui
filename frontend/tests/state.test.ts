@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { createInitialState, setSearchMode, setFieldQuery, resolveField, swapFromTo } from "../src/state";
+import { createInitialState, setSearchMode, setFieldQuery, resolveField, swapFromTo, setMaxTransfers } from "../src/state";
 
 test("setFieldQuery updates the query and clears the field's resolved place/suggestions", () => {
   const state = createInitialState();
@@ -34,4 +34,21 @@ test("setSearchMode is a pure update, leaving the rest of state untouched", () =
   const updated = setSearchMode(state, "park_and_ride");
   expect(updated.searchMode).toBe("park_and_ride");
   expect(updated.timeMode).toBe(state.timeMode);
+});
+
+test("createInitialState defaults maxTransfers to null (unlimited)", () => {
+  expect(createInitialState().maxTransfers).toBeNull();
+});
+
+test("setMaxTransfers is a pure update, leaving the rest of state untouched", () => {
+  const state = createInitialState();
+  const updated = setMaxTransfers(state, 0);
+  expect(updated.maxTransfers).toBe(0);
+  expect(updated.searchMode).toBe(state.searchMode);
+});
+
+test("setMaxTransfers can set the value back to null (unlimited)", () => {
+  const state = setMaxTransfers(createInitialState(), 2);
+  const updated = setMaxTransfers(state, null);
+  expect(updated.maxTransfers).toBeNull();
 });

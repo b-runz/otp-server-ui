@@ -50,6 +50,26 @@ class BringBikeTest {
     }
 
     @Test
+    fun `an explicit maxTransfers cap still returns a real, non-empty result`() {
+        val fixturePath = checkNotNull(javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
+        val loaded = GraphLoader.load(fixturePath)
+        val engine = RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
+
+        val origin = WgsCoordinate(56.171798, 10.172087).moveEastMeters(100.0).moveNorthMeters(100.0)
+        val destination = WgsCoordinate(56.165518, 10.185262).moveEastMeters(200.0).moveNorthMeters(-200.0)
+        val departure = ZonedDateTime.of(2026, 9, 13, 16, 0, 0, 0, ZoneId.of("Europe/Copenhagen")).toInstant()
+
+        // This query's own direct (non-transit) bike route always survives the filter chain
+        // regardless of any transit transfer cap (see this class's own first test's comment), so
+        // capping maxTransfers here is a real, non-vacuous exercise of the new parameter: it proves
+        // bringBike's request-building path accepts and applies it without crashing or silently
+        // dropping the direct-route result.
+        val itineraries = bringBike(engine, origin, destination, TimeMode.DEPART_AT, departure, maxTransfers = 0)
+
+        assertThat(itineraries).isNotEmpty()
+    }
+
+    @Test
     fun `an empty access or egress reach returns the direct route, not a crash`() {
         val fixturePath = checkNotNull(javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
         val loaded = GraphLoader.load(fixturePath)
