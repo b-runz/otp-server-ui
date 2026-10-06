@@ -13,6 +13,7 @@ import one.otpserverui.model.TransitHub
 import one.otpserverui.routing.HubRouting
 import one.otpserverui.routing.RoutingEngine
 import one.otpserverui.routing.bringBike
+import one.otpserverui.routing.fastest
 import one.otpserverui.routing.parkandride.ParkAndRideFinder
 import org.opentripplanner.core.model.basic.Cost
 import org.opentripplanner.model.plan.Itinerary
@@ -49,6 +50,27 @@ internal fun stitchItineraries(legA: Itinerary, legB: Itinerary): Itinerary {
         .build()
 }
 
+/**
+ * Finds the first itinerary in [baseline] (checked in list order) that has a real hub split,
+ * trying every one in turn rather than only the first.
+ *
+ * **Bug this fixes.** [bringBike] always places its direct (non-transit) itinerary ahead of its
+ * transit alternatives in the list it returns (`directItineraries + transitItineraries`, with no
+ * re-sort by duration afterward -- confirmed directly: a real query can have its direct itinerary
+ * sort first at 5519s while a transit alternative with a real hub-adjacent transfer sits later in
+ * the same list at 3970s). [HubRouting.findHubSplit] can never match a direct itinerary (it has no
+ * transit-to-transit transfer to find), so checking only `baseline.firstOrNull()` silently disabled
+ * hub preference whenever a direct route happened to survive the filter chain at all -- which, per
+ * [one.otpserverui.routing.BringBikeTest]'s own comment, is the common case, not a rare one.
+ */
+internal fun findHubSplitAcrossBaseline(hubs: List<TransitHub>, baseline: List<Itinerary>): Pair<Itinerary, TransitHub>? {
+    for (itinerary in baseline) {
+        val hub = HubRouting.findHubSplit(hubs, itinerary) ?: continue
+        return itinerary to hub
+    }
+    return null
+}
+
 private fun bringBikeWithHubPreference(
     engine: RoutingEngine,
     hubs: List<TransitHub>,
@@ -61,20 +83,19 @@ private fun bringBikeWithHubPreference(
 ): Pair<List<Itinerary>, String?> {
     val baseline = bringBike(engine, origin, destination, timeMode, dateTime, maxTransfers = maxTransfers)
     if (!preferHubs) return baseline to null
-    val bestBaseline = baseline.firstOrNull() ?: return baseline to null
-    val hub = HubRouting.findHubSplit(hubs, bestBaseline) ?: return baseline to null
+    val (_, hub) = findHubSplitAcrossBaseline(hubs, baseline) ?: return baseline to null
     val hubCoordinate = WgsCoordinate(hub.lat, hub.lon)
 
     val stitched = runCatching {
         when (timeMode) {
             TimeMode.DEPART_AT -> {
-                val legA = bringBike(engine, origin, hubCoordinate, TimeMode.DEPART_AT, dateTime, maxTransfers = maxTransfers).firstOrNull() ?: return@runCatching null
-                val legB = bringBike(engine, hubCoordinate, destination, TimeMode.DEPART_AT, legA.endTimeAsInstant(), maxTransfers = maxTransfers).firstOrNull() ?: return@runCatching null
+                val legA = bringBike(engine, origin, hubCoordinate, TimeMode.DEPART_AT, dateTime, maxTransfers = maxTransfers).fastest() ?: return@runCatching null
+                val legB = bringBike(engine, hubCoordinate, destination, TimeMode.DEPART_AT, legA.endTimeAsInstant(), maxTransfers = maxTransfers).fastest() ?: return@runCatching null
                 stitchItineraries(legA, legB)
             }
             TimeMode.ARRIVE_BY -> {
-                val legB = bringBike(engine, hubCoordinate, destination, TimeMode.ARRIVE_BY, dateTime, maxTransfers = maxTransfers).firstOrNull() ?: return@runCatching null
-                val legA = bringBike(engine, origin, hubCoordinate, TimeMode.ARRIVE_BY, legB.startTimeAsInstant(), maxTransfers = maxTransfers).firstOrNull() ?: return@runCatching null
+                val legB = bringBike(engine, hubCoordinate, destination, TimeMode.ARRIVE_BY, dateTime, maxTransfers = maxTransfers).fastest() ?: return@runCatching null
+                val legA = bringBike(engine, origin, hubCoordinate, TimeMode.ARRIVE_BY, legB.startTimeAsInstant(), maxTransfers = maxTransfers).fastest() ?: return@runCatching null
                 stitchItineraries(legA, legB)
             }
         }

@@ -342,6 +342,20 @@ fun RoutingEngine.directRoute(from: WgsCoordinate, to: WgsCoordinate, mode: Stre
  * this wrapper has no page cursor to report back into (there is no page cursor tier here, only a
  * single filter call), so the callback is a no-op rather than wired to anything.
  */
+/**
+ * The fastest (shortest wall-clock duration) itinerary in this list, or `null` if empty.
+ *
+ * Several composition call sites need "the single best route from A to B," not "whichever
+ * itinerary a mode's own composition happens to place first." [bringBike]'s own result list is
+ * `directItineraries + transitItineraries`, with no re-sort by duration afterward -- its direct,
+ * non-transit itinerary can and does sort ahead of a faster transit alternative (confirmed directly
+ * against the real production graph: a direct route at 9807s sorting first, ahead of a real transit
+ * alternative at 5907s). `.firstOrNull()` silently picked that slower, non-representative itinerary
+ * wherever a caller actually wanted "the fastest" -- this is that correction, applied once here
+ * rather than at every call site.
+ */
+fun List<Itinerary>.fastest(): Itinerary? = minByOrNull { it.totalDuration() }
+
 fun RoutingEngine.filter(
     itineraries: List<Itinerary>,
     request: RouteRequest,

@@ -18,14 +18,22 @@ import kotlin.io.path.toPath
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import one.otpserverui.GraphLoader
+import one.otpserverui.model.TransitHub
 import one.otpserverui.routing.HubCatalog
 import one.otpserverui.routing.RoutingEngine
 import one.otpserverui.routing.parkandride.ParkAndRideFinder
 import org.junit.jupiter.api.Test
+import org.locationtech.jts.geom.LineString
 import org.opentripplanner.core.model.basic.Cost
+import org.opentripplanner.core.model.i18n.NonLocalizedString
+import org.opentripplanner.model.fare.FareOffer
+import org.opentripplanner.model.plan.Emission
 import org.opentripplanner.model.plan.Itinerary
 import org.opentripplanner.model.plan.Leg
+import org.opentripplanner.model.plan.Place
+import org.opentripplanner.model.plan.leg.LegCallTime
 import org.opentripplanner.model.plan.leg.StreetLeg
+import org.opentripplanner.routing.alertpatch.TransitAlert
 import org.opentripplanner.street.geometry.WgsCoordinate
 import org.opentripplanner.street.search.TraverseMode
 
@@ -250,6 +258,59 @@ class SearchRouteTest {
         assertThat(itineraries).hasSize(1)
         val stopNames = itineraries.single().legs().flatMap { listOf(it.from().name.toString(), it.to().name.toString()) }
         assertThat(stopNames).contains("Park Allé/Rådhuset (Aarhus Kom)")
+    }
+
+    // A minimal `Leg` test double -- same technique and same reasoning as HubRoutingTest.kt's own
+    // FakeTransitLeg: findHubSplit only ever reads isTransitLeg/startTime/endTime/to().coordinate,
+    // which is far cheaper to implement directly than wiring up OTP's real TripTimes/TripPattern
+    // machinery just to construct a ScheduledTransitLeg.
+    private class FakeTransitLeg(
+        private val legStartTime: ZonedDateTime,
+        private val legEndTime: ZonedDateTime,
+        private val toPlace: Place,
+    ) : Leg {
+        override fun isTransitLeg() = true
+        override fun hasSameMode(other: Leg) = other.isTransitLeg
+        override fun start(): LegCallTime? = null
+        override fun end(): LegCallTime? = null
+        override fun startTime(): ZonedDateTime = legStartTime
+        override fun endTime(): ZonedDateTime = legEndTime
+        override fun distanceMeters(): Double = 5_000.0
+        override fun from(): Place = toPlace
+        override fun to(): Place = toPlace
+        override fun legGeometry(): LineString? = null
+        override fun listTransitAlerts(): Set<TransitAlert> = emptySet()
+        override fun emissionPerPerson(): Emission? = null
+        override fun withEmissionPerPerson(emissionPerPerson: Emission?): Leg = this
+        override fun generalizedCost(): Int = 0
+        override fun fareOffers(): List<FareOffer> = emptyList()
+    }
+
+    @Test
+    fun `findHubSplitAcrossBaseline finds a hub split on a later itinerary when the first is a direct route`() {
+        val hub = TransitHub("Test Hub", 56.15, 10.20, stopIds = listOf("1:test"))
+        val directItinerary = syntheticItinerary(listOf(streetLeg(5_000.0)), generalizedCostSeconds = 500)
+
+        val start = ZonedDateTime.of(2026, 9, 13, 16, 0, 0, 0, ZoneId.of("Europe/Copenhagen"))
+        val alightLeg = FakeTransitLeg(start, start.plusMinutes(10), Place.normal(hub.lat, hub.lon, NonLocalizedString(hub.name)))
+        val boardLeg = FakeTransitLeg(start.plusMinutes(11), start.plusMinutes(20), Place.normal(hub.lat + 0.05, hub.lon + 0.05, NonLocalizedString("Elsewhere")))
+        val itineraryWithSplit = Itinerary.ofScheduledTransit(listOf(alightLeg, boardLeg)).withGeneralizedCost(Cost.costOfSeconds(600)).build()
+
+        val result = findHubSplitAcrossBaseline(listOf(hub), listOf(directItinerary, itineraryWithSplit))
+
+        assertThat(result).isNotNull()
+        assertThat(result!!.second).isEqualTo(hub)
+        assertThat(result.first).isSameInstanceAs(itineraryWithSplit)
+    }
+
+    @Test
+    fun `findHubSplitAcrossBaseline returns null when nothing in baseline has a hub split`() {
+        val hub = TransitHub("Test Hub", 56.15, 10.20, stopIds = listOf("1:test"))
+        val directItinerary = syntheticItinerary(listOf(streetLeg(5_000.0)), generalizedCostSeconds = 500)
+
+        val result = findHubSplitAcrossBaseline(listOf(hub), listOf(directItinerary))
+
+        assertThat(result).isNull()
     }
 
     @Test

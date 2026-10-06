@@ -152,7 +152,7 @@ private fun buildStitchedNearbyItinerary(
     val hubCoordinate = WgsCoordinate(hub.lat, hub.lon)
 
     fun plain(from: WgsCoordinate, to: WgsCoordinate, at: Instant): List<Leg>? =
-        bringBike(engine, from, to, timeMode, at, maxTransfers = maxTransfers).firstOrNull()?.toAppItinerary()?.legs
+        bringBike(engine, from, to, timeMode, at, maxTransfers = maxTransfers).fastest()?.toAppItinerary()?.legs
 
     fun viaRoute(from: WgsCoordinate, to: WgsCoordinate, at: Instant): List<Leg>? {
         val itineraries = bringBike(
