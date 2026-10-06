@@ -395,8 +395,14 @@ button {
 }
 
 .leg-icon {
-  font-size: 1.1rem;
   flex: none;
+  color: var(--text-muted);
+}
+
+.leg-icon svg {
+  width: 1.3rem;
+  height: 1.3rem;
+  display: block;
 }
 
 .leg-text {

@@ -27,9 +27,29 @@ test("formatRouteLabel matches bikebus's exact mode-to-label mapping", () => {
   expect(formatRouteLabel("BICYCLE", "n/a")).toBe("n/a");
 });
 
-test("iconForMode has a generic fallback for unmapped modes", () => {
-  expect(iconForMode("BICYCLE")).toBe("🚲");
-  expect(iconForMode("SCOOTER")).toBe("🚏");
+test("iconForMode returns a monochrome line-art SVG, not a colorful emoji", () => {
+  const bicycle = iconForMode("BICYCLE");
+  expect(bicycle).toContain("<svg");
+  expect(bicycle).toContain("stroke=\"currentColor\"");
+  // No emoji characters leaked through anywhere in the markup.
+  expect(bicycle).not.toMatch(/\p{Extended_Pictographic}/u);
+});
+
+test("iconForMode gives each known mode its own distinct icon", () => {
+  const modes = ["BICYCLE", "WALK", "BUS", "RAIL", "TRAM", "SUBWAY", "FERRY", "CAR", "AIRPLANE"];
+  const icons = modes.map(iconForMode);
+  expect(new Set(icons).size).toBe(modes.length);
+});
+
+test("iconForMode has a generic fallback (also an SVG, distinct from the known icons) for unmapped modes", () => {
+  const fallback = iconForMode("SCOOTER");
+  expect(fallback).toContain("<svg");
+  expect(fallback).not.toBe(iconForMode("BICYCLE"));
+});
+
+test("iconForMode treats COACH/TROLLEYBUS the same as BUS", () => {
+  expect(iconForMode("COACH")).toBe(iconForMode("BUS"));
+  expect(iconForMode("TROLLEYBUS")).toBe(iconForMode("BUS"));
 });
 
 test("travelModeFor matches bikebus's exact mapping including the transit set", () => {
