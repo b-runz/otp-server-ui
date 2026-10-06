@@ -101,6 +101,33 @@ class ParkAndRideFinderTest {
     }
 
     @Test
+    fun `accessMode = WALK finds a real transit itinerary with no bike leg at all`() {
+        val fixturePath = checkNotNull(javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
+        val loaded = GraphLoader.load(fixturePath)
+        val engine = RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
+
+        // Real coordinates confirmed directly (throwaway diagnostic code, not committed): starting
+        // from the real "Aarhus Banegårdsplads" hub coordinate (this project's own hubs.json) with
+        // accessMode = WALK finds a real walk-access-then-transit-then-walk-egress itinerary to this
+        // destination -- the same "park and ride onward from a hub, without a bike" composition
+        // parkAndRideWithHubPreference's own leg B relies on.
+        val hubCoordinate = WgsCoordinate(56.15066161538462, 10.203685230769231)
+        val destination = WgsCoordinate(56.24, 10.1)
+        val departure = java.time.ZonedDateTime.of(2026, 9, 13, 8, 0, 0, 0, java.time.ZoneId.of("Europe/Copenhagen")).toInstant()
+
+        val itinerary = ParkAndRideFinder.search(
+            engine, hubCoordinate, destination, departure, maxTransfers = null,
+            accessMode = StreetMode.WALK, accessMaxDuration = Duration.ofMinutes(15),
+        )
+
+        assertThat(itinerary).isNotNull()
+        assertThat(itinerary!!.legs().any { it.isTransitLeg }).isTrue()
+        val accessLeg = itinerary.legs().first()
+        assertThat(accessLeg.isTransitLeg).isFalse()
+        assertThat((accessLeg as StreetLeg).mode).isEqualTo(TraverseMode.WALK)
+    }
+
+    @Test
     fun `honest empty result when no bikeable stop is within reach`() {
         val fixturePath = checkNotNull(javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
         val loaded = GraphLoader.load(fixturePath)

@@ -5,6 +5,7 @@ import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Routing
 import io.ktor.server.routing.post
+import java.time.Duration
 import java.time.Instant
 import one.otpserverui.domain.toAppItinerary
 import one.otpserverui.model.TimeMode
@@ -17,6 +18,12 @@ import org.opentripplanner.core.model.basic.Cost
 import org.opentripplanner.model.plan.Itinerary
 import org.opentripplanner.routing.error.RoutingValidationException
 import org.opentripplanner.street.geometry.WgsCoordinate
+import org.opentripplanner.street.model.StreetMode
+
+// Leg B of a Park & Ride hub-preference stitch (see parkAndRideWithHubPreference) starts walking
+// from the hub coordinate itself, which is already at or next to a real stop -- this cap only
+// needs to be big enough to actually reach that nearby stop, not a real access-distance limit.
+private val HUB_CONTINUATION_WALK_ACCESS: Duration = Duration.ofMinutes(15)
 
 /**
  * Stitches two independently-planned [Itinerary]s (origin -> hub, hub -> destination) into one
@@ -76,6 +83,53 @@ private fun bringBikeWithHubPreference(
     return HubRouting.choose(baseline, stitched, hub.name)
 }
 
+/**
+ * Park & Ride's own hub-preference composition (see [bringBikeWithHubPreference]'s own kdoc for
+ * the shared "split the trip at the hub" idea). The original bikebus app never applied
+ * hub-stitching to Park & Ride at all -- its own `fetchItineraries` returned immediately for that
+ * mode before reaching the hub-preference check, because Park & Ride was hardcoded to zero
+ * transfers there, so a transit-to-transit transfer (what [HubRouting.findHubSplit] matches
+ * against) could never exist on a Park & Ride itinerary in the first place. Once Park & Ride's own
+ * transfer cap became a caller-chosen [maxTransfers] setting instead of a hardcoded zero, that
+ * precondition stopped holding -- a Park & Ride itinerary really can have a transit-to-transit
+ * transfer now, so hub preference is a real, applicable feature for this mode too.
+ *
+ * Leg A (origin -> hub) reuses [ParkAndRideFinder.search] unchanged: "bike to a stop, ride
+ * transit, end at the hub" is exactly what that function already does when the hub coordinate is
+ * passed as the destination. Leg B (hub -> destination) reuses the same function with
+ * [StreetMode.WALK] as the access mode instead of the default bike: once the bike is parked at leg
+ * A's own first stop, the rider never bikes again, so "ride transit onward from the hub" is the
+ * same bike-access-then-transit-then-walk-egress shape with a trivial walk access leg (the hub
+ * coordinate is already at or next to a real stop) rather than a bike one.
+ */
+internal fun parkAndRideWithHubPreference(
+    engine: RoutingEngine,
+    hubs: List<TransitHub>,
+    origin: WgsCoordinate,
+    destination: WgsCoordinate,
+    dateTime: Instant,
+    preferHubs: Boolean,
+    maxTransfers: Int?,
+): Pair<List<Itinerary>, String?> {
+    val baseline = ParkAndRideFinder.search(engine, origin, destination, dateTime, maxTransfers)
+    val baselineList = listOfNotNull(baseline)
+    if (!preferHubs || baseline == null) return baselineList to null
+    val hub = HubRouting.findHubSplit(hubs, baseline) ?: return baselineList to null
+    val hubCoordinate = WgsCoordinate(hub.lat, hub.lon)
+
+    val stitched = runCatching {
+        val legA = ParkAndRideFinder.search(engine, origin, hubCoordinate, dateTime, maxTransfers)
+            ?: return@runCatching null
+        val legB = ParkAndRideFinder.search(
+            engine, hubCoordinate, destination, legA.endTimeAsInstant(), maxTransfers,
+            accessMode = StreetMode.WALK, accessMaxDuration = HUB_CONTINUATION_WALK_ACCESS,
+        ) ?: return@runCatching null
+        stitchItineraries(legA, legB)
+    }.getOrNull()
+
+    return HubRouting.choose(baselineList, stitched, hub.name)
+}
+
 fun Routing.searchRoute(engine: RoutingEngine, hubs: List<TransitHub>) {
     post("/search") {
         val request = call.receive<SearchRequest>()
@@ -105,7 +159,7 @@ fun Routing.searchRoute(engine: RoutingEngine, hubs: List<TransitHub>) {
 
         val (itineraries, notice) = try {
             when (request.mode) {
-                "park_and_ride" -> listOfNotNull(ParkAndRideFinder.search(engine, origin, destination, dateTime, request.maxTransfers)) to null
+                "park_and_ride" -> parkAndRideWithHubPreference(engine, hubs, origin, destination, dateTime, request.preferHubs, request.maxTransfers)
                 else -> bringBikeWithHubPreference(engine, hubs, origin, destination, timeMode, dateTime, request.preferHubs, request.maxTransfers)
             }
         } catch (e: RoutingValidationException) {

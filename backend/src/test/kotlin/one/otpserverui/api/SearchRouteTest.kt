@@ -20,11 +20,13 @@ import kotlinx.serialization.json.Json
 import one.otpserverui.GraphLoader
 import one.otpserverui.routing.HubCatalog
 import one.otpserverui.routing.RoutingEngine
+import one.otpserverui.routing.parkandride.ParkAndRideFinder
 import org.junit.jupiter.api.Test
 import org.opentripplanner.core.model.basic.Cost
 import org.opentripplanner.model.plan.Itinerary
 import org.opentripplanner.model.plan.Leg
 import org.opentripplanner.model.plan.leg.StreetLeg
+import org.opentripplanner.street.geometry.WgsCoordinate
 import org.opentripplanner.street.search.TraverseMode
 
 private fun testEngine(): RoutingEngine {
@@ -198,6 +200,57 @@ class SearchRouteTest {
     // tests must supply one explicitly.
     private fun syntheticItinerary(legs: List<Leg>, generalizedCostSeconds: Int): Itinerary =
         Itinerary.ofDirect(legs).withGeneralizedCost(Cost.costOfSeconds(generalizedCostSeconds)).build()
+
+    // Real origin/destination confirmed directly (throwaway diagnostic code, not committed) against
+    // this project's own tiny fixture graph: an unconstrained (maxTransfers = null) Park & Ride
+    // search finds a real two-transfer itinerary whose first transfer happens at "Park Allé/
+    // Rådhuset (Aarhus Kom)", a stop within HubRouting's own 1000m radius of this project's real
+    // "Aarhus Banegårdsplads" hub (hubs.json) -- a genuine hub-split case, not a fabricated one.
+    // This exact scenario did not exist before this task: Park & Ride was previously hardcoded to
+    // zero transfers, so a transit-to-transit transfer (what HubRouting.findHubSplit matches
+    // against) could never occur on a Park & Ride itinerary at all.
+    private val parkAndRideHubOrigin = WgsCoordinate(56.08, 10.2)
+    private val parkAndRideHubDestination = WgsCoordinate(56.24, 10.1)
+    private val parkAndRideHubDeparture =
+        ZonedDateTime.of(2026, 9, 13, 8, 0, 0, 0, ZoneId.of("Europe/Copenhagen")).toInstant()
+
+    @Test
+    fun `parkAndRideWithHubPreference leaves the baseline untouched when preferHubs is false`() {
+        val engine = testEngine()
+        val hubs = HubCatalog.load()
+
+        val (itineraries, notice) = parkAndRideWithHubPreference(
+            engine, hubs, parkAndRideHubOrigin, parkAndRideHubDestination, parkAndRideHubDeparture,
+            preferHubs = false, maxTransfers = null,
+        )
+
+        assertThat(notice).isNull()
+        // Itinerary has no overridden equals() (confirmed directly: two separately-run searches of
+        // the identical real query produce "non-equal instance[s] with same string representation"),
+        // so this compares the departure/arrival times and leg count instead of object identity.
+        val baseline = ParkAndRideFinder.search(engine, parkAndRideHubOrigin, parkAndRideHubDestination, parkAndRideHubDeparture, maxTransfers = null)
+        assertThat(itineraries).hasSize(1)
+        val result = itineraries.single()
+        assertThat(result.startTimeAsInstant()).isEqualTo(baseline!!.startTimeAsInstant())
+        assertThat(result.endTimeAsInstant()).isEqualTo(baseline.endTimeAsInstant())
+        assertThat(result.legs().size).isEqualTo(baseline.legs().size)
+    }
+
+    @Test
+    fun `parkAndRideWithHubPreference re-routes the transfer through the real cataloged hub when preferHubs is true`() {
+        val engine = testEngine()
+        val hubs = HubCatalog.load()
+
+        val (itineraries, notice) = parkAndRideWithHubPreference(
+            engine, hubs, parkAndRideHubOrigin, parkAndRideHubDestination, parkAndRideHubDeparture,
+            preferHubs = true, maxTransfers = null,
+        )
+
+        assertThat(notice).isEqualTo("Aarhus Banegårdsplads")
+        assertThat(itineraries).hasSize(1)
+        val stopNames = itineraries.single().legs().flatMap { listOf(it.from().name.toString(), it.to().name.toString()) }
+        assertThat(stopNames).contains("Park Allé/Rådhuset (Aarhus Kom)")
+    }
 
     @Test
     fun `stitchItineraries trims the hub connector legs and concatenates in order without NPE`() {

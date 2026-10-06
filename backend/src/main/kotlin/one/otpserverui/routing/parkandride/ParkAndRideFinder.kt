@@ -66,8 +66,7 @@ object ParkAndRideFinder {
      * don't bother searching transit" -- a materially different outcome this function does not
      * have a `null`-shaped answer for, so it is deliberately rethrown rather than swallowed into
      * the same `null` as a real dead end.
-     */
-    /**
+     *
      * [maxTransfers] is the user-facing "number of connections" setting shared across every search
      * mode (the spec's own Park & Ride constraint used to hardcode this at 0 -- it is now just this
      * search's default caller-chosen value like any other mode). `null` means unlimited: no
@@ -82,6 +81,13 @@ object ParkAndRideFinder {
      * used to hardcode. Confirmed empirically against this project's own fixture (originally in
      * Approach A's own file, before it was deleted): raw raptor value 0 -> 0 paths every time; raw
      * raptor value 1 -> 11 paths, all with numberOfTransfers() == 0.
+     *
+     * [accessMode]/[accessMaxDuration] default to the real Park & Ride access leg (bike, 15
+     * minutes), but [one.otpserverui.api.parkAndRideWithHubPreference] also calls this with
+     * [StreetMode.WALK] for the hub-continuation leg of a hub-preferred trip: once the bike is
+     * parked at the first stop, the rider never bikes again, so "ride transit onward from the hub"
+     * is the same bike-access-then-transit-then-walk-egress shape with a trivial walk access
+     * instead of a bike one (the hub coordinate is already at or next to a real stop).
      */
     fun search(
         engine: RoutingEngine,
@@ -89,6 +95,8 @@ object ParkAndRideFinder {
         destination: WgsCoordinate,
         departureTime: Instant,
         maxTransfers: Int?,
+        accessMode: StreetMode = StreetMode.BIKE,
+        accessMaxDuration: Duration = MAX_BIKE_ACCESS,
     ): Itinerary? {
         val request = engine.requestBuilder()
             .withFrom(GenericLocation.fromCoordinate(origin))
@@ -102,7 +110,7 @@ object ParkAndRideFinder {
             .buildRequest()
 
         val access = try {
-            engine.streetReach(origin, StreetMode.BIKE, MAX_BIKE_ACCESS, ReachDirection.ACCESS, request)
+            engine.streetReach(origin, accessMode, accessMaxDuration, ReachDirection.ACCESS, request)
         } catch (e: RoutingValidationException) {
             if (e.routingErrors.any { it.code == RoutingErrorCode.WALKING_BETTER_THAN_TRANSIT }) throw e
             return null
