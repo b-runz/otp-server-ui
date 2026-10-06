@@ -17,32 +17,31 @@ import org.opentripplanner.model.GenericLocation
 import org.opentripplanner.street.geometry.WgsCoordinate
 import org.opentripplanner.street.model.StreetMode
 
-// Fallback radius, tried only when the caller's own [radiusMeters] finds nothing (see
-// [nearbyRoutes]'s own two-tier search below) -- mirrors [one.otpserverui.routing.parkandride
-// .ParkAndRideFinder]'s own MAX_WALK_EGRESS/FALLBACK_WALK_EGRESS two-tier egress search, for the
-// same reason: a real rural destination (Skovstien 5, Mørke) confirmed this gap directly against
-// the production graph -- its nearest route's own path is ~3.7km away, well past the UI's default
-// 500m radius, and this function had no fallback at all, just a silent empty list. [stopsNear]'s
-// own bounding-box lookup (NearbyStops.kt) is a cheap spatial-index query, not a flood fill, so a
-// much larger fallback box costs nothing extra in the common case where the strict radius succeeds.
+// Fallback distance cutoff, applied only when nothing survives the caller's own [radiusMeters]
+// cutoff (see [nearbyRoutes]'s own two-tier filter below) -- mirrors [one.otpserverui.routing
+// .parkandride.ParkAndRideFinder]'s own MAX_WALK_EGRESS/FALLBACK_WALK_EGRESS two-tier egress
+// search, for the same reason: a real rural destination (Skovstien 5, Mørke) confirmed this gap
+// directly against the production graph -- its nearest route's own path is ~3.2km away, well past
+// the UI's default 500m radius.
 private val FALLBACK_NEARBY_ROUTES_RADIUS_METERS = 10_000.0
 
 /**
- * Drop-me-off's "nearby routes" lookup: every bus route serving a stop within [radiusMeters] of
- * [destination] (or, if that finds nothing, within [FALLBACK_NEARBY_ROUTES_RADIUS_METERS] -- see
- * that constant's own KDoc), ranked by how close that route's own path (not just a stop) comes to
- * [destination]. Composes this task's own [stopsNear]/`toPatternDto`/
- * [NearbyRoutesFinder.rankCandidates] -- ported from bikebus's own `TripViewModel.findNearbyRoutes`
- * embedded-engine path, minus any network/GraphQL step (there is none on this path either way).
+ * Drop-me-off's "nearby routes" lookup: every real bus route in the graph, ranked by how close
+ * that route's own path comes to [destination] -- candidate discovery considers every pattern in
+ * the graph via [one.otpserverui.routing.allPatterns] (see that function's own KDoc for why: a
+ * route whose path passes close by can have every one of its own stops further away than any
+ * reasonable search radius, which this project's earlier stop-proximity discovery
+ * ([one.otpserverui.routing.stopsNear]) had no way to find). The ranked result is kept only if its
+ * real path distance is within [radiusMeters], or (if nothing qualifies) within
+ * [FALLBACK_NEARBY_ROUTES_RADIUS_METERS] -- ported (then corrected to be genuinely path-based, not
+ * just path-ranked within a stop-found candidate set) from bikebus's own
+ * `TripViewModel.findNearbyRoutes` embedded-engine path, minus any network/GraphQL step.
  */
 fun nearbyRoutes(engine: RoutingEngine, destination: WgsCoordinate, radiusMeters: Double): List<NearbyRoute> {
-    val strict = engine.stopsNear(destination, radiusMeters)
-    val patterns = if (strict.isNotEmpty()) {
-        strict
-    } else {
-        engine.stopsNear(destination, FALLBACK_NEARBY_ROUTES_RADIUS_METERS)
-    }.map { it.toPatternDto() }
-    return NearbyRoutesFinder.rankCandidates(patterns, destination.latitude(), destination.longitude())
+    val patterns = engine.allPatterns().map { it.toPatternDto() }
+    val ranked = NearbyRoutesFinder.rankCandidates(patterns, destination.latitude(), destination.longitude())
+    val strict = ranked.filter { it.distanceMeters <= radiusMeters }
+    return strict.ifEmpty { ranked.filter { it.distanceMeters <= FALLBACK_NEARBY_ROUTES_RADIUS_METERS } }
 }
 
 // The real CONNECT_BATCH_SIZE value from bikebus's own TripViewModel.connectViaRoute/

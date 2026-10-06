@@ -4,6 +4,7 @@ import org.locationtech.jts.geom.Envelope
 import org.opentripplanner.street.geometry.PolylineEncoder
 import org.opentripplanner.street.geometry.SphericalDistanceLibrary
 import org.opentripplanner.street.geometry.WgsCoordinate
+import org.opentripplanner.transit.model.network.TripPattern
 
 /**
  * One transit route/pattern serving a stop found by [stopsNear], shaped to mirror `PatternDto`
@@ -48,16 +49,32 @@ fun RoutingEngine.stopsNear(coordinate: WgsCoordinate, radiusMeters: Double): Li
     return nearbyStops
         .flatMap { services.transitService.findPatterns(it) }
         .distinctBy { it.id }
-        .map { pattern ->
-            val encodedGeometry = PolylineEncoder.encodeGeometry(pattern.geometry)
-            NearbyPattern(
-                routeGtfsId = pattern.route.id.toString(),
-                routeShortName = pattern.route.shortName,
-                routeMode = pattern.route.mode.name,
-                routeGtfsType = pattern.route.gtfsType,
-                patternGeometryPoints = encodedGeometry.points,
-                patternGeometryPointCount = encodedGeometry.length,
-                stopGtfsIds = pattern.stops.map { it.id.toString() },
-            )
-        }
+        .map { it.toNearbyPattern() }
+}
+
+/**
+ * Every distinct transit pattern in the whole graph, regardless of where its stops are -- see
+ * [one.otpserverui.routing.nearbyRoutes]'s own KDoc for why candidate discovery needs this instead
+ * of [stopsNear]: a route whose real path passes close to a destination can have every one of its
+ * own stops further away than any reasonable search radius (confirmed directly: a real rural
+ * destination near Mørke found its closest route, "L1", this way -- at 3.2km via real path
+ * distance -- while stop-proximity discovery had no way to find it without widening the stop
+ * search radius past where its own stops happen to sit). Confirmed fast enough to run per-request:
+ * checking all 7,810 patterns in the real production graph against a destination point takes
+ * ~220ms (throwaway diagnostic code, not committed).
+ */
+fun RoutingEngine.allPatterns(): List<NearbyPattern> =
+    services.transitService.listTripPatterns().map { it.toNearbyPattern() }
+
+private fun TripPattern.toNearbyPattern(): NearbyPattern {
+    val encodedGeometry = PolylineEncoder.encodeGeometry(geometry)
+    return NearbyPattern(
+        routeGtfsId = route.id.toString(),
+        routeShortName = route.shortName,
+        routeMode = route.mode.name,
+        routeGtfsType = route.gtfsType,
+        patternGeometryPoints = encodedGeometry.points,
+        patternGeometryPointCount = encodedGeometry.length,
+        stopGtfsIds = stops.map { it.id.toString() },
+    )
 }

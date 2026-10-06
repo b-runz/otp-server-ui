@@ -38,4 +38,25 @@ class DropMeOffTest {
 
         assertThat(routes).isNotEmpty()
     }
+
+    @Test
+    fun `nearbyRoutes finds a route whose path passes close by even when every one of its own stops is far away`() {
+        val fixturePath = checkNotNull(javaClass.classLoader.getResource("tiny-fixture-graph.obj")).toURI().toPath()
+        val loaded = GraphLoader.load(fixturePath)
+        val engine = RoutingEngine(loaded.graph, loaded.transitRepository, loaded.transferRepository)
+
+        // Real point confirmed directly (throwaway diagnostic code, not committed) against this
+        // project's own fixture: route "BLÅ" passes just 88m away here, but stop-based discovery
+        // (stopsNear, this function's old candidate-discovery mechanism) finds zero stops within
+        // 500m -- the route has no stop anywhere near this exact stretch of its own path, so the
+        // old mechanism could never have found it regardless of how far the radius was widened.
+        val destination = WgsCoordinate(56.21, 10.13)
+
+        // Confirms this test isn't vacuous: the old stop-based mechanism really does fail here.
+        assertThat(engine.stopsNear(destination, 500.0)).isEmpty()
+
+        val routes = nearbyRoutes(engine, destination, radiusMeters = 500.0)
+
+        assertThat(routes.any { it.routeShortName == "BLÅ" }).isTrue()
+    }
 }
