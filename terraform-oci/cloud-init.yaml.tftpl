@@ -1,0 +1,70 @@
+#cloud-config
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - iptables-persistent
+  - golang-go
+
+write_files:
+  - path: /etc/caddy/Caddyfile
+    content: |
+      ${indent(6, caddyfile_content)}
+
+  - path: /usr/local/bin/otp-graph-refresh.sh
+    permissions: '0755'
+    content: |
+      ${indent(6, refresh_script_content)}
+
+  - path: /etc/cron.d/otp-graph-refresh
+    content: |
+      0 3 * * 1 ubuntu TZ=Europe/Copenhagen /usr/local/bin/otp-graph-refresh.sh >> /var/log/otp-graph-refresh.log 2>&1
+
+runcmd:
+  - curl -fsSL https://get.docker.com | sh
+  - usermod -aG docker ubuntu
+
+  # xcaddy build: Caddy + caddy-ratelimit, compiled once at first boot.
+  # Uses "$(go env GOPATH)/bin/xcaddy" rather than a hardcoded ~/go/bin
+  # path -- confirmed during this plan's own Task 6 that apt's golang-go
+  # (and the golang:1-bookworm image used for that same check) both set
+  # GOPATH to /go or similar, not necessarily $HOME/go, so resolving it
+  # via `go env` is the only reliable way to find the installed binary.
+  - go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+  - |
+    XCADDY="$(go env GOPATH)/bin/xcaddy"
+    "$XCADDY" build --with github.com/mholt/caddy-ratelimit --output /usr/bin/caddy
+
+  - id caddy >/dev/null 2>&1 || groupadd --system caddy
+  - id caddy >/dev/null 2>&1 || useradd --system --gid caddy --home-dir /var/lib/caddy --no-create-home --shell /usr/sbin/nologin --comment 'Caddy web server' caddy
+  - mkdir -p /var/lib/caddy /var/log/caddy
+  - chown -R caddy:caddy /var/lib/caddy /var/log/caddy
+
+  - |
+    cat > /etc/systemd/system/caddy.service <<'EOF'
+    [Unit]
+    Description=Caddy
+    After=network.target
+
+    [Service]
+    User=caddy
+    Group=caddy
+    ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+    ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile
+    Restart=on-failure
+
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+
+  - systemctl daemon-reload
+  - systemctl enable caddy
+  - systemctl restart caddy
+
+  - mkdir -p /home/ubuntu/otp-graph
+  - chown ubuntu:ubuntu /home/ubuntu/otp-graph
+
+  - iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+  - iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+  - netfilter-persistent save

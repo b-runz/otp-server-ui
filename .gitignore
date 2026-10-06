@@ -12,3 +12,9 @@ android/*/build/
 android/*.keystore
 android/local.properties
 android/key.properties
+
+terraform-oci/.terraform/
+terraform-oci/terraform.tfvars
+terraform-oci/terraform.tfstate
+terraform-oci/terraform.tfstate.backup
+terraform-oci/*.tfplan

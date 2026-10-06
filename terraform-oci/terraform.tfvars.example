@@ -1,0 +1,6 @@
+region           = "eu-stockholm-1"
+compartment_ocid = "ocid1.tenancy.oc1..your-tenancy-ocid"
+github_owner     = "b-runz"
+# otp_auth_token and google_places_api_key are deliberately NOT set here --
+# pass them via TF_VAR_otp_auth_token and TF_VAR_google_places_api_key
+# instead (see README.md).
