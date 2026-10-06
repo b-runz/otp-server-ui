@@ -1,0 +1,6 @@
+**/.gradle
+**/build
+frontend/node_modules
+UI/
+.tools/
+.git
