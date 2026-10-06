@@ -17,15 +17,31 @@ import org.opentripplanner.model.GenericLocation
 import org.opentripplanner.street.geometry.WgsCoordinate
 import org.opentripplanner.street.model.StreetMode
 
+// Fallback radius, tried only when the caller's own [radiusMeters] finds nothing (see
+// [nearbyRoutes]'s own two-tier search below) -- mirrors [one.otpserverui.routing.parkandride
+// .ParkAndRideFinder]'s own MAX_WALK_EGRESS/FALLBACK_WALK_EGRESS two-tier egress search, for the
+// same reason: a real rural destination (Skovstien 5, Mørke) confirmed this gap directly against
+// the production graph -- its nearest route's own path is ~3.7km away, well past the UI's default
+// 500m radius, and this function had no fallback at all, just a silent empty list. [stopsNear]'s
+// own bounding-box lookup (NearbyStops.kt) is a cheap spatial-index query, not a flood fill, so a
+// much larger fallback box costs nothing extra in the common case where the strict radius succeeds.
+private val FALLBACK_NEARBY_ROUTES_RADIUS_METERS = 10_000.0
+
 /**
  * Drop-me-off's "nearby routes" lookup: every bus route serving a stop within [radiusMeters] of
- * [destination], ranked by how close that route's own path (not just a stop) comes to
+ * [destination] (or, if that finds nothing, within [FALLBACK_NEARBY_ROUTES_RADIUS_METERS] -- see
+ * that constant's own KDoc), ranked by how close that route's own path (not just a stop) comes to
  * [destination]. Composes this task's own [stopsNear]/`toPatternDto`/
  * [NearbyRoutesFinder.rankCandidates] -- ported from bikebus's own `TripViewModel.findNearbyRoutes`
  * embedded-engine path, minus any network/GraphQL step (there is none on this path either way).
  */
 fun nearbyRoutes(engine: RoutingEngine, destination: WgsCoordinate, radiusMeters: Double): List<NearbyRoute> {
-    val patterns = engine.stopsNear(destination, radiusMeters).map { it.toPatternDto() }
+    val strict = engine.stopsNear(destination, radiusMeters)
+    val patterns = if (strict.isNotEmpty()) {
+        strict
+    } else {
+        engine.stopsNear(destination, FALLBACK_NEARBY_ROUTES_RADIUS_METERS)
+    }.map { it.toPatternDto() }
     return NearbyRoutesFinder.rankCandidates(patterns, destination.latitude(), destination.longitude())
 }
 
