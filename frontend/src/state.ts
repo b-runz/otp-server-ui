@@ -115,20 +115,32 @@ export function resolveField(state: AppState, field: AddressFieldName, candidate
   });
 }
 
+// Searching and drop-me-off are mutually exclusive result modes rendered in separate, always-on
+// areas of the page (#results and #nearby-routes, both driven unconditionally by state) -- without
+// this, switching from one to the other left the previous mode's stale results on screen alongside
+// the new ones instead of replacing them.
+function clearDropMeOffResults(state: AppState): AppState {
+  return { ...state, nearbyRoutes: null, nearbyRoutesError: null, connectResults: {}, connectErrors: {} };
+}
+
+function clearSearchResults(state: AppState): AppState {
+  return { ...state, itineraries: null, notice: null, error: null, searched: false };
+}
+
 export function setItineraries(state: AppState, itineraries: ItineraryDto[], notice: string | null): AppState {
-  return { ...state, itineraries, notice, error: null, searched: true };
+  return clearDropMeOffResults({ ...state, itineraries, notice, error: null, searched: true });
 }
 
 export function setError(state: AppState, message: string): AppState {
-  return { ...state, itineraries: null, notice: null, error: message, searched: true };
+  return clearDropMeOffResults({ ...state, itineraries: null, notice: null, error: message, searched: true });
 }
 
 export function setNearbyRoutes(state: AppState, routes: NearbyRouteDto[]): AppState {
-  return { ...state, nearbyRoutes: routes, nearbyRoutesError: null, connectResults: {}, connectErrors: {} };
+  return clearSearchResults({ ...state, nearbyRoutes: routes, nearbyRoutesError: null, connectResults: {}, connectErrors: {} });
 }
 
 export function setNearbyRoutesError(state: AppState, message: string): AppState {
-  return { ...state, nearbyRoutes: null, nearbyRoutesError: message };
+  return clearSearchResults({ ...state, nearbyRoutes: null, nearbyRoutesError: message });
 }
 
 export function setConnectResult(state: AppState, routeGtfsId: string, result: ConnectResponse): AppState {

@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { createInitialState, setSearchMode, setFieldQuery, resolveField, swapFromTo, setMaxTransfers } from "../src/state";
+import {
+  createInitialState, setSearchMode, setFieldQuery, resolveField, swapFromTo, setMaxTransfers,
+  setItineraries, setError, setNearbyRoutes, setNearbyRoutesError,
+} from "../src/state";
 
 test("setFieldQuery updates the query and clears the field's resolved place/suggestions", () => {
   const state = createInitialState();
@@ -51,4 +54,64 @@ test("setMaxTransfers can set the value back to null (unlimited)", () => {
   const state = setMaxTransfers(createInitialState(), 2);
   const updated = setMaxTransfers(state, null);
   expect(updated.maxTransfers).toBeNull();
+});
+
+test("setItineraries (a normal search) clears any leftover drop-me-off state", () => {
+  const withDropMeOff = {
+    ...createInitialState(),
+    nearbyRoutes: [{ routeGtfsId: "1:x", routeShortName: "42", stopIds: [], distanceMeters: 10 }],
+    nearbyRoutesError: "some earlier error",
+    connectResults: { "1:x": {} as any },
+    connectErrors: { "1:y": "oops" },
+  };
+
+  const updated = setItineraries(withDropMeOff, [], null);
+
+  expect(updated.nearbyRoutes).toBeNull();
+  expect(updated.nearbyRoutesError).toBeNull();
+  expect(updated.connectResults).toEqual({});
+  expect(updated.connectErrors).toEqual({});
+});
+
+test("setError (a failed normal search) clears any leftover drop-me-off state", () => {
+  const withDropMeOff = {
+    ...createInitialState(),
+    nearbyRoutes: [{ routeGtfsId: "1:x", routeShortName: "42", stopIds: [], distanceMeters: 10 }],
+    connectResults: { "1:x": {} as any },
+  };
+
+  const updated = setError(withDropMeOff, "search failed");
+
+  expect(updated.nearbyRoutes).toBeNull();
+  expect(updated.connectResults).toEqual({});
+});
+
+test("setNearbyRoutes (starting drop-me-off) clears any leftover normal-search state", () => {
+  const withSearchResults = {
+    ...createInitialState(),
+    itineraries: [{ legs: [], exceedsBikeLimit: false, hasLongWalkEgress: false }],
+    notice: "via some hub",
+    error: "an old error",
+    searched: true,
+  };
+
+  const updated = setNearbyRoutes(withSearchResults, []);
+
+  expect(updated.itineraries).toBeNull();
+  expect(updated.notice).toBeNull();
+  expect(updated.error).toBeNull();
+  expect(updated.searched).toBe(false);
+});
+
+test("setNearbyRoutesError (a failed drop-me-off lookup) clears any leftover normal-search state", () => {
+  const withSearchResults = {
+    ...createInitialState(),
+    itineraries: [{ legs: [], exceedsBikeLimit: false, hasLongWalkEgress: false }],
+    searched: true,
+  };
+
+  const updated = setNearbyRoutesError(withSearchResults, "lookup failed");
+
+  expect(updated.itineraries).toBeNull();
+  expect(updated.searched).toBe(false);
 });
