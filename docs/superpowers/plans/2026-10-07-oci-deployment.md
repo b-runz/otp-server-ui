@@ -732,6 +732,12 @@ Actions, OCI CLI.
     default = "latest"
   }
 
+  variable "local_graph_path" {
+    description = "Path to the already-built local graph.obj, SCP'd as the initial graph (the weekly cron job takes over from there -- see null_resource.deploy_otp's own comment)."
+    type        = string
+    default     = "../.tools/graph-builder/output/denmark-graph.obj"
+  }
+
   variable "otp_auth_token" {
     description = "Shared secret required in the X-Auth-Token header. Generate with: openssl rand -hex 32"
     type        = string
@@ -951,14 +957,26 @@ Actions, OCI CLI.
     }
   }
 
-  # --- One-time deploy: env-file upload, initial graph build, start the serving container ---
+  # --- One-time deploy: env-file upload, initial graph upload, start the serving container ---
+  #
+  # The *initial* graph.obj is SCP'd from the already-built local copy
+  # (.tools/graph-builder/output/denmark-graph.obj, confirmed real and
+  # working throughout this project's history) via Terraform's own `file`
+  # provisioner, NOT produced by running the graph-builder container
+  # synchronously during apply. This deliberately decouples "does the
+  # VM/Caddy/backend work" from "does the graph-builder container work
+  # end-to-end" -- the graph-builder image is still fully wired into the
+  # weekly cron job (Task 7/this file's cloud-init step), and its first
+  # real execution is simply the first scheduled Monday run, not a
+  # synchronous, apply-blocking step. `local_graph_path`'s own default
+  # points at that same local file.
   resource "null_resource" "deploy_otp" {
     depends_on = [oci_core_instance.otp]
 
     triggers = {
-      otp_image_tag           = var.otp_image_tag
-      graph_builder_image_tag = var.graph_builder_image_tag
-      instance_id             = oci_core_instance.otp.id
+      otp_image_tag = var.otp_image_tag
+      instance_id   = oci_core_instance.otp.id
+      graph_sha     = filesha256(var.local_graph_path)
     }
 
     connection {
@@ -977,14 +995,16 @@ Actions, OCI CLI.
       destination = "/home/ubuntu/otp-server-ui.env"
     }
 
+    # Initial graph, SCP'd directly -- see this resource's own comment above.
+    provisioner "file" {
+      source      = var.local_graph_path
+      destination = "/home/ubuntu/otp-graph/graph.obj"
+    }
+
     provisioner "remote-exec" {
       inline = [
         "cloud-init status --wait",
         "chmod 600 /home/ubuntu/otp-server-ui.env",
-
-        "sudo docker pull ghcr.io/${var.github_owner}/otp-graph-builder:${var.graph_builder_image_tag}",
-        "sudo docker run --rm -v /home/ubuntu/otp-graph:/output ghcr.io/${var.github_owner}/otp-graph-builder:${var.graph_builder_image_tag}",
-        "mv /home/ubuntu/otp-graph/graph.obj.new /home/ubuntu/otp-graph/graph.obj",
 
         "sudo docker rm -f otp-server-ui || true",
         "sudo docker pull ghcr.io/${var.github_owner}/otp-server-ui:${var.otp_image_tag}",
