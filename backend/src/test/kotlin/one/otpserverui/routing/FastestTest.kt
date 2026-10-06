@@ -7,7 +7,11 @@ import kotlin.io.path.toPath
 import one.otpserverui.GraphLoader
 import one.otpserverui.model.TimeMode
 import org.junit.jupiter.api.Test
+import org.opentripplanner.core.model.basic.Cost
+import org.opentripplanner.model.plan.Itinerary
+import org.opentripplanner.model.plan.leg.StreetLeg
 import org.opentripplanner.street.geometry.WgsCoordinate
+import org.opentripplanner.street.search.TraverseMode
 
 /**
  * [List<Itinerary>.fastest]'s behavioral test, using a real query confirmed directly (throwaway
@@ -36,12 +40,43 @@ class FastestTest {
         val fastest = itineraries.fastest()
 
         assertThat(fastest).isNotNull()
-        assertThat(fastest!!.totalDuration()).isLessThan(itineraries.first().totalDuration())
-        assertThat(itineraries.all { it.totalDuration() >= fastest.totalDuration() }).isTrue()
+        assertThat(fastest!!.endTimeAsInstant()).isLessThan(itineraries.first().endTimeAsInstant())
+        assertThat(itineraries.all { it.endTimeAsInstant() >= fastest.endTimeAsInstant() }).isTrue()
+    }
+
+    // Synthetic legs (same technique as SearchRouteTest.kt's own streetLeg/syntheticItinerary
+    // helpers) -- reproduces the real bug directly: a later-departing itinerary with a shorter own
+    // duration must never be picked over an earlier-departing one that arrives sooner overall. This
+    // is exactly the shape that made a real hub-preferred Bring Bike search skip a real, well-timed
+    // bus 121 connection at Rønde Busterminal in favor of a bus over an hour later (see fastest's
+    // own KDoc) -- confirmed by reverting this function to `minByOrNull { totalDuration() }` and
+    // watching this test fail.
+    @Test
+    fun `fastest picks the itinerary that arrives soonest, not the one with the shortest own duration`() {
+        val start = ZonedDateTime.of(2026, 9, 13, 8, 0, 0, 0, ZoneId.of("Europe/Copenhagen"))
+
+        // Departs now, a 90-minute ride, arrives at 09:30.
+        val soonerButLonger = syntheticItinerary(start, start.plusMinutes(90))
+        // Departs an hour later, only a 60-minute ride, but still arrives later overall (10:00).
+        val laterButShorter = syntheticItinerary(start.plusMinutes(60), start.plusMinutes(120))
+
+        val fastest = listOf(laterButShorter, soonerButLonger).fastest()
+
+        assertThat(fastest).isSameInstanceAs(soonerButLonger)
     }
 
     @Test
     fun `fastest returns null for an empty list`() {
-        assertThat(emptyList<org.opentripplanner.model.plan.Itinerary>().fastest()).isNull()
+        assertThat(emptyList<Itinerary>().fastest()).isNull()
+    }
+
+    private fun syntheticItinerary(start: ZonedDateTime, end: ZonedDateTime): Itinerary {
+        val leg = StreetLeg.of()
+            .withMode(TraverseMode.WALK)
+            .withStartTime(start)
+            .withEndTime(end)
+            .withDistanceMeters(1_000.0)
+            .build()
+        return Itinerary.ofDirect(listOf(leg)).withGeneralizedCost(Cost.costOfSeconds(1)).build()
     }
 }

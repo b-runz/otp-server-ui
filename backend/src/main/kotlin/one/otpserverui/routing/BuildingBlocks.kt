@@ -343,18 +343,30 @@ fun RoutingEngine.directRoute(from: WgsCoordinate, to: WgsCoordinate, mode: Stre
  * single filter call), so the callback is a no-op rather than wired to anything.
  */
 /**
- * The fastest (shortest wall-clock duration) itinerary in this list, or `null` if empty.
+ * The itinerary in this list that arrives soonest, or `null` if empty.
  *
  * Several composition call sites need "the single best route from A to B," not "whichever
  * itinerary a mode's own composition happens to place first." [bringBike]'s own result list is
- * `directItineraries + transitItineraries`, with no re-sort by duration afterward -- its direct,
- * non-transit itinerary can and does sort ahead of a faster transit alternative (confirmed directly
- * against the real production graph: a direct route at 9807s sorting first, ahead of a real transit
- * alternative at 5907s). `.firstOrNull()` silently picked that slower, non-representative itinerary
- * wherever a caller actually wanted "the fastest" -- this is that correction, applied once here
- * rather than at every call site.
+ * `directItineraries + transitItineraries`, with no re-sort afterward -- its direct, non-transit
+ * itinerary can and does sort ahead of a faster transit alternative (confirmed directly against the
+ * real production graph: a direct route at 9807s sorting first, ahead of a real transit alternative
+ * at 5907s). `.firstOrNull()` silently picked that slower, non-representative itinerary wherever a
+ * caller actually wanted "the fastest" -- that part of this correction is sound.
+ *
+ * **Soonest arrival, not shortest own duration.** The first version of this function picked
+ * `minByOrNull { it.totalDuration() }` instead, which looks equivalent but is wrong for exactly the
+ * case this function exists for: a fresh sub-search run from a mid-trip instant (e.g. "continue on
+ * from this hub") can return several non-dominated itineraries that depart at genuinely different
+ * real times -- e.g. one leaving soon with a 90-minute ride versus one leaving an hour later with a
+ * 60-minute ride, neither strictly dominating the other in OTP's own pareto filtering. Picking by
+ * shortest own-[Itinerary.totalDuration] prefers the second (shorter span) even though it arrives
+ * later overall -- confirmed directly: this exact shape caused a real hub-preferred Bring Bike
+ * search to skip a real, well-timed bus 121 connection at "Rønde Busterminal" in favor of a bus
+ * over an hour later with a marginally shorter ride, making the hub-preferred alternative look far
+ * worse than it really was. Sorting by [Itinerary.endTimeAsInstant] instead picks whichever
+ * itinerary actually gets there first, which is what "the single best route from A to B" means.
  */
-fun List<Itinerary>.fastest(): Itinerary? = minByOrNull { it.totalDuration() }
+fun List<Itinerary>.fastest(): Itinerary? = minByOrNull { it.endTimeAsInstant() }
 
 fun RoutingEngine.filter(
     itineraries: List<Itinerary>,
