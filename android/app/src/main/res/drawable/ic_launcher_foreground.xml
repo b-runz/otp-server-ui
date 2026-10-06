@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Placeholder foreground (per the plan's Self-Review: app icon/name is a deliberately
+     deferred, low-stakes follow-up); swap for something real at any point. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,24 L74,74 L34,74 Z" />
+</vector>
