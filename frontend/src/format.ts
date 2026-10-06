@@ -36,7 +36,7 @@ export function formatRouteLabel(mode: string, shortName: string): string {
 // emoji -- each is a plain inline SVG so it inherits whatever text color applies, matching the
 // rest of the UI's dark/line-art theme rather than rendering as a full-color pictograph.
 function svgIcon(body: string): string {
-  return `<svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+  return `<svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
 }
 
 const MODE_ICONS: Record<string, string> = {
@@ -44,14 +44,18 @@ const MODE_ICONS: Record<string, string> = {
     '<circle cx="6" cy="17" r="3.3"/><circle cx="18" cy="17" r="3.3"/>' +
     '<path d="M6 17 L10 9 H15 L18 17 M10 9 L12.5 5.5 H14.5 M10 9 L13 17"/>',
   ),
+  // "footprints" from Lucide (lucide.dev, ISC license) -- a clearer "walking leg" glyph than a
+  // hand-drawn stick figure.
   WALK: svgIcon(
-    '<circle cx="12" cy="4.5" r="1.8"/>' +
-    '<path d="M12 7 L11 14 M11 10 L7 13 M11 10 L15.5 12 M11 14 L8 20 M11 14 L14.5 20"/>',
+    '<path d="M4 16v-2.38C4 11.5 2.97 10.5 3 8c.03-2.72 1.49-6 4.5-6C9.37 2 10 3.8 10 5.5c0 3.11-2 5.66-2 8.68V16a2 2 0 1 1-4 0Z"/>' +
+    '<path d="M20 20v-2.38c0-2.12 1.03-3.12 1-5.62-.03-2.72-1.49-6-4.5-6C14.63 6 14 7.8 14 9.5c0 3.11 2 5.66 2 8.68V20a2 2 0 1 0 4 0Z"/>' +
+    '<path d="M16 17h4"/><path d="M4 13h4"/>',
   ),
+  // "bus" from Lucide (lucide.dev, ISC license).
   BUS: svgIcon(
-    '<rect x="4" y="5" width="16" height="11" rx="2.5"/>' +
-    '<path d="M4 11 H20 M8 5 V16 M16 5 V16"/>' +
-    '<circle cx="8" cy="18.3" r="1.5"/><circle cx="16" cy="18.3" r="1.5"/>',
+    '<path d="M8 6v6"/><path d="M15 6v6"/><path d="M2 12h19.6"/>' +
+    '<path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/>' +
+    '<circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/>',
   ),
   RAIL: svgIcon(
     '<rect x="5" y="4" width="14" height="12" rx="2.5"/>' +
