@@ -925,21 +925,70 @@ git commit -m "Port Places API client, rewire NetworkModule to OtpServerApi"
 ### Task 5: Rewrite `TripViewModel`
 
 **Files:**
+- Modify: `android/app/src/main/java/one/brj/bikebus/data/SavedPlacesStore.kt`
 - Create: `android/app/src/main/java/one/brj/bikebus/TripViewModel.kt`
 - Test: `android/app/src/test/java/one/brj/bikebus/TripViewModelTest.kt`
 
 **Interfaces:**
 - Consumes: `OtpServerApi`/`SearchResult`/`ConnectOutcome` (Task 3), `PlacesApi` (Task 4), `TripUiState`/`SearchMode`/`ResolvedPlace`/`PlaceSuggestion`/`SavedPlace` (Task 2).
-- Produces: `TripViewModel(application: Application)` with `uiState: StateFlow<TripUiState>` and the public methods listed below — Task 6's `TripScreen` binds to these exact names.
+- Produces: `PlacesPersistence` (interface, in `data/SavedPlacesStore.kt`); `TripViewModel(application: Application)` with `uiState: StateFlow<TripUiState>` and the public methods listed below — Task 6's `TripScreen` binds to these exact names.
 
-- [ ] **Step 1: Write the failing tests**
+**A note on why this task's tests don't use Robolectric:** an earlier attempt at this task tried running `TripViewModel`'s tests under Robolectric (to provide a real `Application`/`Context` for `AndroidViewModel`'s constructor). That led to a three-layer dead end on this machine's toolchain: Robolectric 4.13 doesn't support this project's real `compileSdk`/`targetSdk` (37) at all; the version that does (4.17) needs a JDK 21 *host* to build its sandbox, which this project doesn't otherwise need; and even with that fixed, Robolectric 4.17's own internals fail against a plain JDK 17/21 install with `IllegalAccessException: ... module java.base does not export jdk.internal.access` (Robolectric needs `--add-opens` JVM flags this module doesn't set). A sibling project in this same dev environment (`bikebus/app`, same real AGP/Kotlin/compileSdk/targetSdk) independently reaches the same conclusion: it uses on-device `androidTest` for anything touching the Android framework, and plain JUnit (no Robolectric) for everything else. Given the plan's own constraint against device/emulator testing by Claude, the correct fix is to avoid needing a real/simulated Android framework at all — which turns out to be straightforward, since the only two framework dependencies `TripViewModel` actually has (`SavedPlacesStore`'s `Context`, and `LocationProvider`'s `Context`) are either overridable or untouched by this task's tests. See Step 1 below.
 
-These use a fake `OtpServerApi`-shaped seam. Since `OtpServerApi`'s constructor takes a real `OkHttpClient`, the test doubles the HTTP layer with `MockWebServer` (same tool as Task 3) rather than subclassing, keeping `TripViewModel` decoupled from a test-only interface:
+- [ ] **Step 1: Add a `PlacesPersistence` seam to `SavedPlacesStore.kt`**
+
+Modify `android/app/src/main/java/one/brj/bikebus/data/SavedPlacesStore.kt` (from Task 2) to extract an interface and have `SavedPlacesStore` implement it — purely additive, no behavior change:
+
+```kotlin
+package one.brj.bikebus.data
+
+import android.content.Context
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import one.brj.bikebus.model.SavedPlace
+
+interface PlacesPersistence {
+    fun loadFavorites(): List<SavedPlace>
+    fun saveFavorites(places: List<SavedPlace>)
+    fun loadRecents(): List<SavedPlace>
+    fun saveRecents(places: List<SavedPlace>)
+}
+
+class SavedPlacesStore(context: Context) : PlacesPersistence {
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun loadFavorites(): List<SavedPlace> = load(KEY_FAVORITES)
+    override fun saveFavorites(places: List<SavedPlace>) = save(KEY_FAVORITES, places)
+
+    override fun loadRecents(): List<SavedPlace> = load(KEY_RECENTS)
+    override fun saveRecents(places: List<SavedPlace>) = save(KEY_RECENTS, places)
+
+    private fun load(key: String): List<SavedPlace> = runCatching {
+        prefs.getString(key, null)?.let { json.decodeFromString<List<SavedPlace>>(it) }
+    }.getOrNull() ?: emptyList()
+
+    private fun save(key: String, places: List<SavedPlace>) {
+        prefs.edit().putString(key, json.encodeToString(places)).apply()
+    }
+
+    companion object {
+        private const val PREFS_NAME = "saved_places"
+        private const val KEY_FAVORITES = "favorites"
+        private const val KEY_RECENTS = "recents"
+    }
+}
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+These never need a real/simulated Android `Context`: `TripViewModel` takes `Application()` constructed directly (its constructor only stores the reference, never dereferences it in any path these tests exercise), `otpServerApiOverride` points at `MockWebServer` (same tool as Task 3), and a new `placesPersistenceOverride` replaces `SavedPlacesStore` with an in-memory fake — so this is a plain JUnit test, no Robolectric, no `androidx.test`:
 
 ```kotlin
 package one.brj.bikebus
 
-import androidx.test.core.app.ApplicationProvider
+import android.app.Application
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -949,6 +998,7 @@ import kotlinx.coroutines.test.setMain
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import one.brj.bikebus.data.PlacesPersistence
 import one.brj.bikebus.model.NearbyRoute
 import one.brj.bikebus.model.SavedPlace
 import one.brj.bikebus.model.SearchMode
@@ -958,11 +1008,17 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
+
+private class FakePlacesPersistence : PlacesPersistence {
+    private var favorites = emptyList<SavedPlace>()
+    private var recents = emptyList<SavedPlace>()
+    override fun loadFavorites() = favorites
+    override fun saveFavorites(places: List<SavedPlace>) { favorites = places }
+    override fun loadRecents() = recents
+    override fun saveRecents(places: List<SavedPlace>) { recents = places }
+}
 
 @OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(RobolectricTestRunner::class)
 class TripViewModelTest {
     private lateinit var server: MockWebServer
     private lateinit var viewModel: TripViewModel
@@ -974,8 +1030,9 @@ class TripViewModelTest {
         server = MockWebServer()
         server.start()
         viewModel = TripViewModel(
-            application = ApplicationProvider.getApplicationContext(),
+            application = Application(),
             otpServerApiOverride = OtpServerApi(OkHttpClient(), server.url("/").toString().removeSuffix("/"), "test-token"),
+            placesPersistenceOverride = FakePlacesPersistence(),
         )
     }
 
@@ -1023,8 +1080,9 @@ class TripViewModelTest {
         // A fresh viewModel pointed at a non-routable address, so this test never touches
         // the shared server/viewModel (and never needs to shut the server down mid-test).
         val unreachableViewModel = TripViewModel(
-            application = ApplicationProvider.getApplicationContext(),
+            application = Application(),
             otpServerApiOverride = OtpServerApi(OkHttpClient(), "http://127.0.0.1:1", "test-token"),
+            placesPersistenceOverride = FakePlacesPersistence(),
         )
         unreachableViewModel.selectSavedPlace(SavedPlace("p1", "Origin", 55.0, 12.0), isFrom = true)
         unreachableViewModel.selectSavedPlace(SavedPlace("p2", "Destination", 56.0, 13.0), isFrom = false)
@@ -1045,36 +1103,7 @@ class TripViewModelTest {
 }
 ```
 
-This requires `androidx.test:core` and `org.robolectric:robolectric` (to run `AndroidViewModel`'s `Application` dependency on the JVM, not a device) as new `testImplementation` dependencies, plus a constructor seam (`otpServerApiOverride`) so the test never touches the real `NetworkModule` singleton.
-
-- [ ] **Step 2: Add the test-only dependencies**
-
-Add to `android/app/build.gradle.kts`'s `dependencies` block:
-
-```kotlin
-    testImplementation("androidx.test:core:1.6.1")
-    testImplementation("org.robolectric:robolectric:4.17")
-```
-
-And add, inside the `android { }` block:
-
-```kotlin
-    testOptions {
-        unitTests.isIncludeAndroidResources = true
-    }
-```
-
-Also add, at the top level of the file (outside the `android { }` block) — Robolectric's API-37 shadow needs a JDK 21 host to build its sandbox, independent of this module's own JVM 17 compile target (`sourceCompatibility`/`jvmTarget`, unchanged), so only the *test-execution* JVM is pinned to 21:
-
-```kotlin
-tasks.withType<Test> {
-    javaLauncher.set(javaToolchains.launcherFor {
-        languageVersion.set(JavaLanguageVersion.of(21))
-    })
-}
-```
-
-This requires a JDK 21 toolchain Gradle can find or auto-provision (confirm via `./gradlew -q javaToolchains`) — on this machine one is already auto-provisioned at `C:\Users\bru\.gradle\jdks\eclipse_adoptium-21-amd64-windows.2`, so no further setup should be needed.
+This requires no new test dependencies beyond what Task 1 already added (`junit:junit`, `kotlinx-coroutines-test`, `mockwebserver`) — constructing `android.app.Application()` directly on the plain JVM unit-test classpath works (its constructor only calls `super(null)`, touching nothing that the default Android unit-test stub jar would reject), and neither of these tests ever call a method that touches `LocationProvider` (the only other framework-dependent lazy property on `TripViewModel`, only reached from `fetchSuggestions`, which none of these tests exercise).
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
@@ -1096,6 +1125,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import one.brj.bikebus.data.PlacesPersistence
 import one.brj.bikebus.data.SavedPlacesStore
 import one.brj.bikebus.domain.LocationProvider
 import one.brj.bikebus.model.NearbyRoute
@@ -1128,12 +1158,13 @@ import kotlin.math.abs
 class TripViewModel(
     application: Application,
     private val otpServerApiOverride: OtpServerApi? = null,
+    private val placesPersistenceOverride: PlacesPersistence? = null,
 ) : AndroidViewModel(application) {
 
     private val placesApi by lazy { NetworkModule.placesApi }
     private val otpServerApi by lazy { otpServerApiOverride ?: NetworkModule.otpServerApi }
     private val deviceLocation by lazy { LocationProvider.lastKnownCoarseLocation(getApplication<Application>()) }
-    private val savedPlacesStore by lazy { SavedPlacesStore(getApplication<Application>()) }
+    private val savedPlacesStore: PlacesPersistence by lazy { placesPersistenceOverride ?: SavedPlacesStore(getApplication<Application>()) }
 
     private val _uiState = MutableStateFlow(TripUiState())
     val uiState: StateFlow<TripUiState> = _uiState
@@ -1444,7 +1475,7 @@ Expected: PASS (6 tests).
 - [ ] **Step 6: Commit**
 
 ```bash
-git add android/app/src/main/java/one/brj/bikebus/TripViewModel.kt android/app/src/test/java/one/brj/bikebus/TripViewModelTest.kt android/app/build.gradle.kts
+git add android/app/src/main/java/one/brj/bikebus/TripViewModel.kt android/app/src/main/java/one/brj/bikebus/data/SavedPlacesStore.kt android/app/src/test/java/one/brj/bikebus/TripViewModelTest.kt
 git commit -m "Rewrite TripViewModel to call OtpServerApi instead of raw OTP GraphQL"
 ```
 
