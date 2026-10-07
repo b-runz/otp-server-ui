@@ -1,5 +1,6 @@
 package one.brj.bikebus.network
 
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -28,12 +29,13 @@ class OtpServerApi(
     private val client: OkHttpClient,
     private val baseUrl: String,
     private val authToken: String,
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private fun errorCode(body: String): String =
         runCatching { json.decodeFromString(SearchErrorResponseDto.serializer(), body).error }
             .getOrDefault("unknown_error")
 
-    suspend fun search(request: SearchRequestDto): SearchResult = withContext(Dispatchers.IO) {
+    suspend fun search(request: SearchRequestDto): SearchResult = withContext(dispatcher) {
         val httpRequest = Request.Builder()
             .url("$baseUrl/search")
             .header("X-Auth-Token", authToken)
@@ -51,7 +53,7 @@ class OtpServerApi(
     }
 
     suspend fun nearbyRoutes(lat: Double, lon: Double, radiusMeters: Double = 500.0): List<NearbyRoute> =
-        withContext(Dispatchers.IO) {
+        withContext(dispatcher) {
             val httpRequest = Request.Builder()
                 .url("$baseUrl/nearby-routes?lat=$lat&lon=$lon&radiusMeters=$radiusMeters")
                 .header("X-Auth-Token", authToken)
@@ -63,7 +65,7 @@ class OtpServerApi(
             }
         }
 
-    suspend fun connect(request: ConnectRequestDto): ConnectOutcome = withContext(Dispatchers.IO) {
+    suspend fun connect(request: ConnectRequestDto): ConnectOutcome = withContext(dispatcher) {
         val httpRequest = Request.Builder()
             .url("$baseUrl/connect")
             .header("X-Auth-Token", authToken)

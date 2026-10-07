@@ -79,6 +79,10 @@ android {
             signingConfig = signingConfigs.getByName("release")
         }
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

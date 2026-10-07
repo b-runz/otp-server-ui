@@ -6,15 +6,22 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import one.brj.bikebus.model.SavedPlace
 
-class SavedPlacesStore(context: Context) {
+interface PlacesPersistence {
+    fun loadFavorites(): List<SavedPlace>
+    fun saveFavorites(places: List<SavedPlace>)
+    fun loadRecents(): List<SavedPlace>
+    fun saveRecents(places: List<SavedPlace>)
+}
+
+class SavedPlacesStore(context: Context) : PlacesPersistence {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun loadFavorites(): List<SavedPlace> = load(KEY_FAVORITES)
-    fun saveFavorites(places: List<SavedPlace>) = save(KEY_FAVORITES, places)
+    override fun loadFavorites(): List<SavedPlace> = load(KEY_FAVORITES)
+    override fun saveFavorites(places: List<SavedPlace>) = save(KEY_FAVORITES, places)
 
-    fun loadRecents(): List<SavedPlace> = load(KEY_RECENTS)
-    fun saveRecents(places: List<SavedPlace>) = save(KEY_RECENTS, places)
+    override fun loadRecents(): List<SavedPlace> = load(KEY_RECENTS)
+    override fun saveRecents(places: List<SavedPlace>) = save(KEY_RECENTS, places)
 
     private fun load(key: String): List<SavedPlace> = runCatching {
         prefs.getString(key, null)?.let { json.decodeFromString<List<SavedPlace>>(it) }
