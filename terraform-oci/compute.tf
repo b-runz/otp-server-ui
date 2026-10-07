@@ -33,7 +33,7 @@ resource "oci_core_instance" "otp" {
   }
 
   metadata = {
-    ssh_authorized_keys = file(var.ssh_public_key_path)
+    ssh_authorized_keys = file(pathexpand(var.ssh_public_key_path))
     # templatefile() cannot call itself recursively (confirmed directly) --
     # both sub-templates are rendered here, at the top level, and the
     # already-rendered strings are what cloud-init.yaml.tftpl itself
@@ -76,7 +76,7 @@ resource "null_resource" "deploy_otp" {
     type        = "ssh"
     host        = oci_core_instance.otp.public_ip
     user        = "ubuntu"
-    private_key = file(var.ssh_private_key_path)
+    private_key = file(pathexpand(var.ssh_private_key_path))
     timeout     = "5m"
   }
 
