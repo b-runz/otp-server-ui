@@ -46,7 +46,7 @@ variable "graph_builder_image_tag" {
 variable "local_graph_path" {
   description = "Path to the already-built local graph.obj, SCP'd as the initial graph (the weekly cron job takes over from there -- see null_resource.deploy_otp's own comment)."
   type        = string
-  default     = "../.tools/graph-builder/output/denmark-graph.obj"
+  default     = "../graph-builder/output/denmark-graph.obj"
 }
 
 variable "otp_auth_token" {
