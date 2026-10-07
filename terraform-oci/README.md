@@ -84,8 +84,14 @@ actually points at it.
   while building this: resolve it via `$(go env GOPATH)` rather than
   assuming `~/go`, or the xcaddy binary silently ends up somewhere the
   next command doesn't look.
-- **Secret redaction in `terraform plan`/`apply` output:** confirmed
-  directly against the real Terraform version used for this deployment
-  that neither `otp_auth_token` nor `google_places_api_key` ever appear
-  in plan/apply output, including where they flow through the `file`
-  provisioner -- re-verify this if the Terraform version in use changes.
+- **Secret redaction in `terraform plan`/`apply` output:** `terraform
+  plan` never exercises provisioners at all, so it can't prove this --
+  confirmed instead with a real, isolated `terraform apply` (throwaway
+  config, `null_resource` + `local-exec`, same Terraform version used for
+  this deployment) interpolating a `sensitive = true` variable into a
+  provisioner command. The console output showed `(output suppressed due
+  to sensitive value in config)` and the secret value appeared zero times
+  in the captured apply log, while the file the provisioner wrote still
+  contained the real value, confirming redaction is console-output-only
+  and doesn't affect what's written to disk. Re-verify this if the
+  Terraform version in use changes.
