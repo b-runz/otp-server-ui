@@ -3,6 +3,18 @@ variable "region" {
   type        = string
 }
 
+variable "oci_auth" {
+  description = "OCI provider auth type: \"ApiKey\" (default, reads ~/.oci/config's DEFAULT profile) or \"SecurityToken\" (browser session auth, e.g. `oci session authenticate` -- needed for a tenancy with no registered API key)."
+  type        = string
+  default     = "ApiKey"
+}
+
+variable "oci_config_profile" {
+  description = "Profile name in ~/.oci/config to use for auth (matches the OCI CLI's own --profile)."
+  type        = string
+  default     = "DEFAULT"
+}
+
 variable "compartment_ocid" {
   description = "OCID of the compartment to create resources in."
   type        = string
