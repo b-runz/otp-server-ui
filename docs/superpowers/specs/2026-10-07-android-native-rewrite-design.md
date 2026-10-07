@@ -224,6 +224,34 @@ WebView-app work).
   `assembleDebug`/`assembleRelease` succeeds and hand off the APK; the user
   installs and tests it on their own physical device.
 
+## Backend: strip frontend-serving from the server image
+
+Once the Android app is a native client calling the backend's API directly,
+nothing loads the hosted web frontend anymore. It was never reachable by a
+plain browser in the first place — Caddy gates every request behind
+`X-Auth-Token`, which only the (now-replaced) WebView's token injection
+could attach — so this isn't a behavior change for any real user, just
+removing now-genuinely-dead weight:
+
+- `backend/src/main/kotlin/one/otpserverui/Main.kt`: remove the `staticFiles`
+  conditional block, its `staticDir` parameter, and the `staticFiles` import.
+  Nothing else in the backend depends on this.
+- `backend/src/test/kotlin/one/otpserverui/StaticFilesTest.kt`: delete (tests
+  the feature being removed).
+- Root `Dockerfile`: drop `COPY --from=build /src/frontend/dist
+  /app/frontend-dist` and `ENV FRONTEND_DIST_PATH=...`.
+- `.github/workflows/publish-images.yml`: drop the `oven-sh/setup-bun@v2` and
+  `bun install && bun run build` steps from the `backend` job — nothing
+  copies `frontend/dist` into the image anymore, so building it in CI is
+  pointless.
+- `terraform-oci/README.md`'s opening line updated to describe an API-only
+  backend.
+
+`frontend/` source stays in the repo (useful for local dev/testing against
+the API); the graph-builder/weekly-cron deployment pieces are unrelated and
+untouched; Caddy's config needs no changes (it already gates on headers,
+not paths).
+
 ## Branching
 
 All work happens on a new branch in `otp-server-ui` (not in `bikebus-main`,

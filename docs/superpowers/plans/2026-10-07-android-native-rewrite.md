@@ -1707,3 +1707,173 @@ Expected: both `BUILD SUCCESSFUL`. This is the full test suite from Tasks 2/3/5 
 git add android/README.md
 git commit -m "Update android/README.md for the native rewrite"
 ```
+
+---
+
+### Task 8: Strip frontend-serving from the backend image
+
+**Files:**
+- Modify: `backend/src/main/kotlin/one/otpserverui/Main.kt`
+- Delete: `backend/src/test/kotlin/one/otpserverui/StaticFilesTest.kt`
+- Modify: `Dockerfile`
+- Modify: `.github/workflows/publish-images.yml`
+- Modify: `terraform-oci/README.md`
+
+**Interfaces:** None — this task is independent of Tasks 1-7 (different directories: `backend/`, root `Dockerfile`, `.github/`, `terraform-oci/`, never `android/`) and can be implemented in any order relative to them.
+
+- [ ] **Step 1: Remove the static-file-serving block from `Main.kt`**
+
+Remove the `staticFiles` import (`io.ktor.server.http.content.staticFiles`), the `staticDir` parameter from `Application.module(...)`, and the `if (Files.isDirectory(staticDir)) { staticFiles("/", staticDir.toFile()) }` block from the `routing { }` block. The resulting `module` function signature and routing block:
+
+```kotlin
+fun Application.module(
+    engine: RoutingEngine,
+    hubs: List<TransitHub>,
+    geocodeClient: GeocodeClient,
+) {
+    install(ContentNegotiation) { json() }
+    install(StatusPages) {
+        exception<NumberFormatException> { call, _ ->
+            call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("invalid_request"))
+        }
+        exception<IllegalStateException> { call, _ ->
+            call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("invalid_request"))
+        }
+        exception<DateTimeParseException> { call, _ ->
+            call.respond(HttpStatusCode.BadRequest, SearchErrorResponse("invalid_request"))
+        }
+        exception<Throwable> { call, _ ->
+            call.respond(HttpStatusCode.InternalServerError, SearchErrorResponse("internal_error"))
+        }
+    }
+    routing {
+        get("/health") { call.respondText("ok") }
+        searchRoute(engine, hubs)
+        dropMeOffRoutes(engine, hubs)
+        geocodeRoute(geocodeClient)
+    }
+}
+```
+
+Also remove the now-unused `java.nio.file.Files` import if nothing else in the file uses `Files` (check: `loadGraphOrFail` at the top of the file calls `Files.exists(path)`, so the import stays — only the `staticFiles` import and the `staticDir` parameter/block are removed).
+
+- [ ] **Step 2: Delete the test for the removed feature**
+
+```bash
+cd /c/Users/bru/spare-source/otp-server-ui
+rm backend/src/test/kotlin/one/otpserverui/StaticFilesTest.kt
+```
+
+- [ ] **Step 3: Run the backend test suite**
+
+Run: `./gradlew :backend:test`
+Expected: `BUILD SUCCESSFUL` — confirms removing the parameter didn't break any other caller of `module(...)` (grep for other call sites first: `grep -rn "fun Application.module\|application { module(" backend/src` should show only `Main.kt`'s own `main()` and `StaticFilesTest.kt`, the latter just deleted).
+
+- [ ] **Step 4: Trim the Dockerfile**
+
+Remove these two lines from the root `Dockerfile`'s runtime stage:
+
+```dockerfile
+COPY --from=build /src/frontend/dist /app/frontend-dist
+ENV FRONTEND_DIST_PATH=/app/frontend-dist
+```
+
+The resulting file:
+
+```dockerfile
+# --- Build stage ---
+FROM eclipse-temurin:17-jdk AS build
+WORKDIR /src
+COPY . .
+RUN ./gradlew :backend:installDist --no-daemon
+
+# --- Runtime stage ---
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+COPY --from=build /src/backend/build/install/backend /app
+ENV PORT=8080
+EXPOSE 8080
+ENTRYPOINT ["/app/bin/backend"]
+```
+
+- [ ] **Step 5: Trim the CI workflow**
+
+Remove the `oven-sh/setup-bun@v2` and `bun install && bun run build` steps from the `backend` job in `.github/workflows/publish-images.yml`:
+
+```yaml
+name: Publish images
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/otp-server-ui:latest
+
+  graph-builder:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: graph-builder/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/otp-graph-builder:latest
+```
+
+(The `graph-builder` job is shown unchanged, for context — don't touch it.)
+
+- [ ] **Step 6: Update `terraform-oci/README.md`'s opening line**
+
+Change:
+
+```markdown
+Deploys this project's own backend (API + frontend) behind a
+custom-built, rate-limited, token-gated Caddy, on an Always Free
+`VM.Standard.A1.Flex` instance.
+```
+
+to:
+
+```markdown
+Deploys this project's own backend (a pure API service — see
+`docs/superpowers/specs/2026-10-07-android-native-rewrite-design.md` for
+why the frontend is no longer served) behind a custom-built, rate-limited,
+token-gated Caddy, on an Always Free `VM.Standard.A1.Flex` instance.
+```
+
+- [ ] **Step 7: Verify the real CI build still succeeds**
+
+Push this task's commit (see Step 8) and confirm via `gh run watch` (or the Actions tab) that the `backend` job still builds and pushes `ghcr.io/<owner>/otp-server-ui:latest` successfully without the Bun steps. This is the same real-CI-as-verification approach already used for every other Dockerfile change in this project — no local emulated Docker build needed given CI already proves it on real hardware.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add backend/src/main/kotlin/one/otpserverui/Main.kt Dockerfile .github/workflows/publish-images.yml terraform-oci/README.md
+git rm backend/src/test/kotlin/one/otpserverui/StaticFilesTest.kt
+git commit -m "Strip frontend-serving from the backend: API-only now that the Android app is native"
+```
