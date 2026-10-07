@@ -1053,7 +1053,7 @@ Add to `android/app/build.gradle.kts`'s `dependencies` block:
 
 ```kotlin
     testImplementation("androidx.test:core:1.6.1")
-    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("org.robolectric:robolectric:4.17")
 ```
 
 And add, inside the `android { }` block:
