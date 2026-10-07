@@ -2,9 +2,10 @@
 
 A native Jetpack Compose app for the OTP server UI. It talks to the
 `otp-server-ui` backend's `/search`, `/nearby-routes`, and `/connect`
-endpoints directly over HTTP (`OtpServerApi`, built on OkHttp + Retrofit +
-kotlinx.serialization) and renders the results with its own Compose
-screens — there is no WebView and no hosted frontend involved anymore.
+endpoints directly over HTTP (`OtpServerApi`, hand-written on top of
+OkHttp + kotlinx.serialization — Retrofit is used only for `PlacesApi`)
+and renders the results with its own Compose screens — there is no
+WebView and no hosted frontend involved anymore.
 
 Address autocomplete and geocoding go straight to Google Places
 (`PlacesApi`, calling `https://places.googleapis.com/` directly with its
@@ -12,11 +13,9 @@ own `GOOGLE_PLACES_API_KEY`) rather than through the backend's
 `/geocode` endpoint — that endpoint exists for the hosted web frontend,
 but this app never uses it.
 
-See `../docs/superpowers/specs/2026-10-07-android-app-design.md` for the
-original WebView design this app replaced, and
-`../docs/superpowers/plans/2026-10-07-android-app.md` /
-`.superpowers/sdd/2026-10-07-android-native-rewrite/` for the native
-rewrite's design and implementation plan.
+See `../docs/superpowers/specs/2026-10-07-android-native-rewrite-design.md`
+and `../docs/superpowers/plans/2026-10-07-android-native-rewrite.md` for
+the native rewrite's design and implementation plan.
 
 ## Building
 

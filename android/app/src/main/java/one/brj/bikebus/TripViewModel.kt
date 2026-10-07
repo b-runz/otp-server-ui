@@ -40,7 +40,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 
-class TripViewModel(
+class TripViewModel @JvmOverloads constructor(
     application: Application,
     private val otpServerApiOverride: OtpServerApi? = null,
     private val placesPersistenceOverride: PlacesPersistence? = null,
@@ -188,8 +188,7 @@ class TripViewModel(
                         outcome.exceptionOrNull()?.let { Log.e("TripViewModel", "selectNearbyRoute() failed", it) }
                         "Couldn't reach the routing server"
                     }
-                    outcome.getOrNull() is ConnectOutcome.Error -> "Couldn't find a way to reach this route from your origin"
-                    else -> null
+                    else -> (outcome.getOrNull() as? ConnectOutcome.Error)?.let { messageForErrorCode(it.code) }
                 }
                 val success = (outcome.getOrNull() as? ConnectOutcome.Success)?.result
                 _uiState.update {
@@ -277,10 +276,7 @@ class TripViewModel(
                     _uiState.update { it.copy(isLoading = false, itineraries = result.itineraries, notice = notice) }
                 }
                 is SearchResult.Error -> {
-                    val message = when (result.code) {
-                        "no_coverage" -> "No route exists between these points"
-                        else -> "Couldn't reach the routing server"
-                    }
+                    val message = messageForErrorCode(result.code)
                     _uiState.update { it.copy(isLoading = false, itineraries = emptyList(), error = message) }
                 }
             }
@@ -346,3 +342,16 @@ private fun TimeMode.wireValue(): String = when (this) {
     TimeMode.DEPART_AT -> "depart_at"
     TimeMode.ARRIVE_BY -> "arrive_by"
 }
+
+private val ERROR_MESSAGES: Map<String, String> = mapOf(
+    "no_coverage" to "That trip is outside the area this planner covers.",
+    "unreachable" to "No route was found to that stop.",
+    "unknown_mode" to "Unknown search mode.",
+    "invalid_time_mode" to "Unknown time mode.",
+    "unsupported_time_mode" to "Park & Ride doesn't support \"arrive by\" yet — try \"depart at\".",
+    "invalid_request" to "That request couldn't be understood — check the date/time and try again.",
+    "internal_error" to "Something went wrong. Please try again.",
+)
+
+private fun messageForErrorCode(code: String): String =
+    ERROR_MESSAGES[code] ?: "Couldn't reach the routing server"

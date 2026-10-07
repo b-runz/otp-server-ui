@@ -82,6 +82,7 @@ class OtpServerApiTest {
         val routes = api.nearbyRoutes(lat = 55.0, lon = 12.0)
         assertEquals(1, routes.size)
         assertEquals("1A", routes.first().routeShortName)
+        assertEquals("test-token", server.takeRequest().getHeader("X-Auth-Token"))
     }
 
     @Test
@@ -96,5 +97,6 @@ class OtpServerApiTest {
         )
         check(result is ConnectOutcome.Error)
         assertEquals("unreachable", result.code)
+        assertEquals("test-token", server.takeRequest().getHeader("X-Auth-Token"))
     }
 }

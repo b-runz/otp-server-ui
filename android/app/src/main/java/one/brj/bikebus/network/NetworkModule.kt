@@ -28,7 +28,7 @@ object NetworkModule {
     val otpServerApi: OtpServerApi by lazy {
         OtpServerApi(
             client = okHttpClient,
-            baseUrl = BuildConfig.OTP_SERVER_BASE_URL,
+            baseUrl = BuildConfig.OTP_SERVER_BASE_URL.trimEnd('/'),
             authToken = BuildConfig.OTP_AUTH_TOKEN,
         )
     }

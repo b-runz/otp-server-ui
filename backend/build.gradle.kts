@@ -43,10 +43,9 @@ application {
     mainClass.set("one.otpserverui.MainKt")
 }
 
-// FRONTEND_DIST_PATH defaults to the relative path "frontend/dist" (Main.kt), which must resolve
-// against the repo root to match docs/graph-build.md's documented `./gradlew :backend:run`
-// invocation (run from the repo root) -- without this override, `run`'s working directory would
-// default to `backend/`, so the relative path would resolve to the nonexistent `backend/frontend/dist`.
+// GRAPH_FILE_PATH (Main.kt) is a path supplied relative to the repo root, per docs/graph-build.md's
+// documented `./gradlew :backend:run` invocation (run from the repo root) -- without this override,
+// `run`'s working directory would default to `backend/`, so that relative path would resolve wrong.
 tasks.named<JavaExec>("run") {
     workingDir = rootProject.projectDir
 }

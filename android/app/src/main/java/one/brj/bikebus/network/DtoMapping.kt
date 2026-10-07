@@ -6,7 +6,7 @@ import one.brj.bikebus.model.Leg
 import one.brj.bikebus.model.NearbyRoute
 import java.time.Instant
 import java.time.OffsetDateTime
-import java.time.ZoneOffset
+import java.time.ZoneId
 
 fun LegDto.toUiModel(): Leg = Leg(
     mode = mode,
@@ -19,7 +19,7 @@ fun LegDto.toUiModel(): Leg = Leg(
     fromName = fromName,
     toName = toName,
     routeShortName = routeShortName,
-    departureTime = OffsetDateTime.ofInstant(Instant.ofEpochSecond(departureEpochSecond), ZoneOffset.UTC),
+    departureTime = OffsetDateTime.ofInstant(Instant.ofEpochSecond(departureEpochSecond), ZoneId.systemDefault()),
 )
 
 fun ItineraryDto.toUiModel(): Itinerary = Itinerary(

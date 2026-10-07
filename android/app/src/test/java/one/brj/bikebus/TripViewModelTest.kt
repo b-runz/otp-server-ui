@@ -84,7 +84,17 @@ class TripViewModelTest {
         server.enqueue(MockResponse().setBody("""{"error":"no_coverage"}""").setResponseCode(422))
         viewModel.search()
         dispatcher.scheduler.advanceUntilIdle()
-        assertEquals("No route exists between these points", viewModel.uiState.value.error)
+        assertEquals("That trip is outside the area this planner covers.", viewModel.uiState.value.error)
+    }
+
+    @Test
+    fun `search maps unsupported_time_mode to a specific message`() = runTest {
+        viewModel.selectSavedPlace(SavedPlace("p1", "Origin", 55.0, 12.0), isFrom = true)
+        viewModel.selectSavedPlace(SavedPlace("p2", "Destination", 56.0, 13.0), isFrom = false)
+        server.enqueue(MockResponse().setBody("""{"error":"unsupported_time_mode"}""").setResponseCode(400))
+        viewModel.search()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals("Park & Ride doesn't support \"arrive by\" yet — try \"depart at\".", viewModel.uiState.value.error)
     }
 
     @Test
@@ -110,6 +120,23 @@ class TripViewModelTest {
         server.enqueue(MockResponse().setBody("""{"error":"unreachable"}""").setResponseCode(422))
         viewModel.selectNearbyRoute(NearbyRoute(routeGtfsId = "RUT:1", routeShortName = "1A", stopIds = listOf("S1"), distanceMeters = 10.0))
         dispatcher.scheduler.advanceUntilIdle()
-        assertEquals("Couldn't find a way to reach this route from your origin", viewModel.uiState.value.nearbyRoutesState.connectError)
+        assertEquals("No route was found to that stop.", viewModel.uiState.value.nearbyRoutesState.connectError)
+    }
+
+    @Test
+    fun `selectNearbyRoute maps a non-unreachable connect error code to its own message, not the generic one`() = runTest {
+        viewModel.selectSavedPlace(SavedPlace("p1", "Origin", 55.0, 12.0), isFrom = true)
+        viewModel.selectSavedPlace(SavedPlace("p2", "Destination", 56.0, 13.0), isFrom = false)
+        server.enqueue(MockResponse().setBody("""{"error":"internal_error"}""").setResponseCode(500))
+        viewModel.selectNearbyRoute(NearbyRoute(routeGtfsId = "RUT:1", routeShortName = "1A", stopIds = listOf("S1"), distanceMeters = 10.0))
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals("Something went wrong. Please try again.", viewModel.uiState.value.nearbyRoutesState.connectError)
+    }
+
+    @Test
+    fun `AndroidViewModelFactory can construct TripViewModel with only an Application`() {
+        // Pins the real crash this app would hit without @JvmOverloads: Compose's default
+        // viewModel() factory does getConstructor(Application::class.java) via reflection.
+        TripViewModel::class.java.getConstructor(Application::class.java)
     }
 }
