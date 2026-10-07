@@ -1928,9 +1928,9 @@ why the frontend is no longer served) behind a custom-built, rate-limited,
 token-gated Caddy, on an Always Free `VM.Standard.A1.Flex` instance.
 ```
 
-- [ ] **Step 7: Verify the real CI build still succeeds**
+- [ ] **Step 7: Verify locally (real CI runs automatically once this branch merges)**
 
-Push this task's commit (see Step 8) and confirm via `gh run watch` (or the Actions tab) that the `backend` job still builds and pushes `ghcr.io/<owner>/otp-server-ui:latest` successfully without the Bun steps. This is the same real-CI-as-verification approach already used for every other Dockerfile change in this project — no local emulated Docker build needed given CI already proves it on real hardware.
+`publish-images.yml` only triggers on pushes to `main` (`on: push: branches: [main]`), and this task's work happens on the `android-native-rewrite` feature branch — pushing this branch does not run the workflow. Run `./gradlew :backend:test` instead to confirm `Main.kt`'s change didn't break anything, and visually re-check the trimmed `Dockerfile`/`publish-images.yml` for syntax correctness (no automated check for either outside a real CI run). Real CI will exercise both files for real the moment this branch merges to `main` — no separate action needed from this task to arrange that.
 
 - [ ] **Step 8: Commit**
 
