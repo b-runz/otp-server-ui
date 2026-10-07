@@ -22,6 +22,15 @@
 # TF_VAR_google_places_api_key already exported in your shell:
 #   ./scripts/retry-apply.sh
 #
+# If the tenancy uses browser-session auth (oci_auth = "SecurityToken" in
+# terraform.tfvars, e.g. via `oci session authenticate`) instead of a
+# registered API key, also export OCI_SESSION_PROFILE matching
+# terraform.tfvars's oci_config_profile -- the session token lasts only
+# ~1 hour, so on a NotAuthenticated error this script runs
+# `oci session refresh` for you and keeps retrying, rather than silently
+# stalling until someone notices. If OCI_SESSION_PROFILE is unset (the
+# default ApiKey auth case), this refresh step is skipped entirely.
+#
 # Safe to leave running in the background (nohup ./scripts/retry-apply.sh &).
 
 set -uo pipefail
@@ -46,6 +55,20 @@ while true; do
   if echo "$OUTPUT" | grep -q "Out of host capacity"; then
     echo "=== Out of host capacity -- retrying in ${RETRY_INTERVAL_SECONDS}s ==="
     sleep "$RETRY_INTERVAL_SECONDS"
+  elif echo "$OUTPUT" | grep -qi "NotAuthenticated\|NotAuthorized.*token\|security token"; then
+    if [ -n "${OCI_SESSION_PROFILE:-}" ]; then
+      echo "=== Session token expired -- refreshing profile '$OCI_SESSION_PROFILE' ==="
+      if oci session refresh --profile "$OCI_SESSION_PROFILE" 2>&1; then
+        echo "=== Refreshed -- retrying immediately ==="
+      else
+        echo "=== Refresh failed -- the refresh token itself has likely expired."
+        echo "    Run 'oci session authenticate --profile $OCI_SESSION_PROFILE --region <region>' yourself (opens a browser), then restart this script. ==="
+        exit 1
+      fi
+    else
+      echo "=== Auth error but OCI_SESSION_PROFILE isn't set, so there's no session to refresh -- stopping. Investigate manually. ==="
+      exit 1
+    fi
   else
     echo "=== Non-capacity error on attempt $ATTEMPT -- stopping. Investigate manually. ==="
     exit 1
