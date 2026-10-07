@@ -1064,6 +1064,18 @@ And add, inside the `android { }` block:
     }
 ```
 
+Also add, at the top level of the file (outside the `android { }` block) — Robolectric's API-37 shadow needs a JDK 21 host to build its sandbox, independent of this module's own JVM 17 compile target (`sourceCompatibility`/`jvmTarget`, unchanged), so only the *test-execution* JVM is pinned to 21:
+
+```kotlin
+tasks.withType<Test> {
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    })
+}
+```
+
+This requires a JDK 21 toolchain Gradle can find or auto-provision (confirm via `./gradlew -q javaToolchains`) — on this machine one is already auto-provisioned at `C:\Users\bru\.gradle\jdks\eclipse_adoptium-21-amd64-windows.2`, so no further setup should be needed.
+
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `cd android && ./gradlew :app:testDebugUnitTest --tests "one.brj.bikebus.TripViewModelTest"`
