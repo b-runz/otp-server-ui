@@ -1,12 +1,9 @@
 # otp-server-ui on an Oracle Cloud Always Free VM
 
-Deploys this project's own backend (API + frontend) behind a
-custom-built, rate-limited, token-gated Caddy, on an Always Free
-`VM.Standard.A1.Flex` instance. Replaces an earlier deployment of bare
-upstream OpenTripPlanner (`bikebus/terraform-oci/`) entirely -- see
-`docs/superpowers/specs/2026-10-07-oci-deployment-design.md` for the full
-design and `docs/superpowers/plans/2026-10-07-oci-deployment.md` for how
-this was built.
+Deploys this project's own backend (a pure API service — see
+`docs/superpowers/specs/2026-10-07-android-native-rewrite-design.md` for
+why the frontend is no longer served) behind a custom-built, rate-limited,
+token-gated Caddy, on an Always Free `VM.Standard.A1.Flex` instance.
 
 ## Prerequisites (one-time, manual)
 
