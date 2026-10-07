@@ -1,38 +1,56 @@
-# `one.brj.bikebus` — Android WebView app
+# `one.brj.bikebus` — Android native app
 
-A single-screen Android app that loads the real deployed OTP server UI
-(`https://otp.brj.one`) in a WebView, attaching `X-Auth-Token` to every
-request the page makes (not just the initial navigation) via a custom
-`WebViewClient.shouldInterceptRequest`.
+A native Jetpack Compose app for the OTP server UI. It talks to the
+`otp-server-ui` backend's `/search`, `/nearby-routes`, and `/connect`
+endpoints directly over HTTP (`OtpServerApi`, hand-written on top of
+OkHttp + kotlinx.serialization — Retrofit is used only for `PlacesApi`)
+and renders the results with its own Compose screens — there is no
+WebView and no hosted frontend involved anymore.
 
-See `../docs/superpowers/specs/2026-10-07-android-app-design.md` for the
-full design and `../docs/superpowers/plans/2026-10-07-android-app.md` for
-the implementation plan this project was scaffolded from.
+Address autocomplete and geocoding go straight to Google Places
+(`PlacesApi`, calling `https://places.googleapis.com/` directly with its
+own `GOOGLE_PLACES_API_KEY`) rather than through the backend's
+`/geocode` endpoint — that endpoint exists for the hosted web frontend,
+but this app never uses it.
+
+See `../docs/superpowers/specs/2026-10-07-android-native-rewrite-design.md`
+and `../docs/superpowers/plans/2026-10-07-android-native-rewrite.md` for
+the native rewrite's design and implementation plan.
 
 ## Building
 
-This app **must be built after the OCI deployment plan's Task 11 is
-complete** — it needs the real, deployed `otp_auth_token` value to build
-against (`OTP_AUTH_TOKEN` must be the *same* value as terraform-oci's
-`otp_auth_token` variable), and the real, live `https://otp.brj.one`
-endpoint to actually load anything useful.
+This app needs three secrets at build time, each supplied only via an
+environment variable, never committed to a source file:
 
-`OTP_AUTH_TOKEN` is supplied only via an environment variable at build
-time, never committed to a source file:
+- `OTP_AUTH_TOKEN` — must be the *same* value as terraform-oci's
+  `otp_auth_token` variable; sent as the `X-Auth-Token` header on every
+  `OtpServerApi` request.
+- `GOOGLE_PLACES_API_KEY` — a Google Places API key, sent as the
+  `X-Goog-Api-Key` header on every `PlacesApi` request.
+- `OTP_SERVER_BASE_URL` — the backend's base URL (e.g.
+  `https://otp.brj.one`), used to build every `OtpServerApi` request URL.
 
 ```bash
 cd android
 export OTP_AUTH_TOKEN="<the real otp_auth_token value from the OCI deployment>"
+export GOOGLE_PLACES_API_KEY="<a real Google Places API key>"
+export OTP_SERVER_BASE_URL="https://otp.brj.one"
 ./gradlew assembleDebug    # or assembleRelease
 ```
 
-A build with `OTP_AUTH_TOKEN` unset fails immediately with a
-`GradleException` (see `app/build.gradle.kts`) rather than silently
-producing an APK that sends a blank header and gets a confusing 403 at
-runtime.
+A build with any of these three unset fails immediately with a
+`GradleException` (see `app/build.gradle.kts`'s `requiredEnv` helper)
+rather than silently producing an APK that sends blank headers and gets
+confusing failures at runtime. Each value is baked in at build time via
+a generated `BuildConfig` field (`BuildConfig.OTP_AUTH_TOKEN`,
+`BuildConfig.GOOGLE_PLACES_API_KEY`, `BuildConfig.OTP_SERVER_BASE_URL`),
+read by `NetworkModule`.
 
-For a local build-check only (no real token/server available yet), any
-placeholder value works, e.g. `OTP_AUTH_TOKEN=placeholder-for-build-check`.
+For a local build-check only (no real secrets/server available yet),
+placeholder values work for all three, e.g.
+`OTP_AUTH_TOKEN=placeholder-for-build-check`,
+`GOOGLE_PLACES_API_KEY=placeholder-for-build-check`,
+`OTP_SERVER_BASE_URL=http://localhost:8081`.
 
 ## Signing key decision (Task 1)
 
@@ -95,11 +113,32 @@ keystore — do not generate a new one for this app.**
 
 ## Project layout
 
-- `app/src/main/java/one/brj/bikebus/MainActivity.kt` — the app's only
-  screen.
-- `app/src/main/java/one/brj/bikebus/TokenInjectingWebViewClient.kt` —
-  the `WebViewClient` that re-fetches every resource via OkHttp with
-  `X-Auth-Token` attached.
+- `app/src/main/java/one/brj/bikebus/MainActivity.kt` — hosts the
+  Compose content, requests the coarse-location permission, and renders
+  `TripScreen`.
+- `app/src/main/java/one/brj/bikebus/TripViewModel.kt` — the app's one
+  `AndroidViewModel`; owns `TripUiState`, drives address autocomplete
+  via `PlacesApi`, issues searches/connects via `OtpServerApi`, and
+  persists favorites/recents via `SavedPlacesStore`.
+- `app/src/main/java/one/brj/bikebus/ui/` — the Compose screen and its
+  pieces: `TripScreen.kt` (the one screen), `ModeToggle.kt`,
+  `AddressField.kt`, `DateTimePickers.kt`, `ResultsList.kt`,
+  `NearbyRoutesResults.kt`, plus `theme/Theme.kt`.
+- `app/src/main/java/one/brj/bikebus/network/` — `OtpServerApi.kt`
+  (hand-written OkHttp client for `/search`, `/nearby-routes`,
+  `/connect`, plus their DTOs in `OtpServerDto.kt` and mapping to UI
+  models in `DtoMapping.kt`), `PlacesApi.kt` / `PlacesDto.kt` (Retrofit
+  interface for Google Places autocomplete + place details), and
+  `NetworkModule.kt` (builds the shared `OkHttpClient`/`Retrofit`
+  instances and reads the three `BuildConfig` secrets).
+- `app/src/main/java/one/brj/bikebus/data/SavedPlacesStore.kt` — local
+  persistence for favorite/recent places.
+- `app/src/main/java/one/brj/bikebus/domain/` — `LocationProvider.kt`
+  (last-known coarse device location) and `MapsIntent.kt` (launching
+  Google Maps for a resolved place).
+- `app/src/main/java/one/brj/bikebus/model/` — plain Kotlin UI/domain
+  models (`TripUiState`, `Itinerary`, `NearbyRoute`, `ResolvedPlace`,
+  `SavedPlace`, etc.).
 
 ## Known deviations from the written plan
 
@@ -114,13 +153,13 @@ rather than force an exact match:
 - AGP `9.4.0`, Gradle `9.6.0`, Kotlin `2.3.21`, `compileSdk`/`targetSdk`
   `37` (installed and already working locally for `bikebus`). `minSdk`
   stays `26` as the plan specifies.
-- Added `androidx.appcompat:appcompat` and
-  `androidx.activity:activity-ktx` dependencies, not listed in the plan's
-  own `build.gradle.kts` snippet — required for `MainActivity` to extend
-  `AppCompatActivity` (which also requires `Theme.OtpServerUi` to extend
-  a `Theme.AppCompat` descendant, not a bare platform theme) and for the
-  `onBackPressedDispatcher.addCallback(this) { ... }` extension the
-  plan's own `MainActivity.kt` snippet uses.
+- The original WebView-era build added `androidx.appcompat:appcompat`
+  and `androidx.activity:activity-ktx` (needed for that `MainActivity`
+  to extend `AppCompatActivity` and use
+  `onBackPressedDispatcher.addCallback`). The native Compose rewrite
+  dropped both: `MainActivity` now extends plain `ComponentActivity`
+  and calls `setContent { ... }`, per standard Compose convention, so
+  appcompat is no longer a dependency.
 - Added minimal adaptive-icon drawables (`ic_launcher_background` /
   `ic_launcher_foreground` / `mipmap-anydpi-v26/ic_launcher.xml`) since
   the manifest references `@mipmap/ic_launcher`, which must resolve to

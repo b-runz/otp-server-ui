@@ -1,36 +1,31 @@
 package one.brj.bikebus
 
+import android.Manifest
 import android.os.Bundle
-import android.webkit.WebView
-import androidx.activity.addCallback
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Modifier
+import one.brj.bikebus.ui.TripScreen
+import one.brj.bikebus.ui.theme.BikeBusTheme
 
-class MainActivity : AppCompatActivity() {
-    private lateinit var webView: WebView
-
+class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        webView = findViewById(R.id.webView)
-        webView.settings.javaScriptEnabled = true
-        webView.settings.domStorageEnabled = true
-        webView.webViewClient = TokenInjectingWebViewClient(
-            authToken = BuildConfig.OTP_AUTH_TOKEN,
-            onLoadFailed = { runOnUiThread { showRetryView() } },
-        )
-        webView.loadUrl("https://otp.brj.one")
-
-        onBackPressedDispatcher.addCallback(this) {
-            if (webView.canGoBack()) webView.goBack() else isEnabled = false.also { finish() }
+        setContent {
+            val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+            LaunchedEffect(Unit) {
+                permissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+            BikeBusTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    TripScreen()
+                }
+            }
         }
-    }
-
-    private fun showRetryView() {
-        // A minimal native view with a message + Retry button that
-        // re-calls webView.loadUrl("https://otp.brj.one") -- real layout
-        // resource to be added here; not detailed further in this plan
-        // since it's a small, low-risk UI addition with no real design
-        // decisions left open.
     }
 }

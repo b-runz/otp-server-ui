@@ -8,7 +8,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
-import io.ktor.server.http.content.staticFiles
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
@@ -67,7 +66,6 @@ fun Application.module(
     engine: RoutingEngine,
     hubs: List<TransitHub>,
     geocodeClient: GeocodeClient,
-    staticDir: Path = Path.of(System.getenv("FRONTEND_DIST_PATH") ?: "frontend/dist"),
 ) {
     install(ContentNegotiation) { json() }
     // Typed error responses for the exceptions this backend's handlers don't already catch
@@ -102,8 +100,5 @@ fun Application.module(
         searchRoute(engine, hubs)
         dropMeOffRoutes(engine, hubs)
         geocodeRoute(geocodeClient)
-        if (Files.isDirectory(staticDir)) {
-            staticFiles("/", staticDir.toFile())
-        }
     }
 }

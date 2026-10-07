@@ -41,7 +41,6 @@
 - Delete: `android/app/src/main/res/layout/activity_main.xml`
 - Delete: `android/app/src/main/res/values/themes.xml`
 - Create (temporary, replaced in Task 6): `android/app/src/main/java/one/brj/bikebus/MainActivity.kt`
-- Modify: `android/README.md`
 
 **Interfaces:**
 - Produces: `BuildConfig.OTP_AUTH_TOKEN`, `BuildConfig.GOOGLE_PLACES_API_KEY`, `BuildConfig.OTP_SERVER_BASE_URL` — every later task's network code reads these three fields.
@@ -832,6 +831,8 @@ class OtpServerApi(
 }
 ```
 
+**Note (added during Task 5):** Task 5's tests need to inject the *same* `TestDispatcher` used for `Dispatchers.setMain(...)` into `OtpServerApi`'s internal `withContext` calls, so `advanceUntilIdle()` can see and drain that work deterministically (the real `Dispatchers.IO` runs on its own thread pool invisible to the test scheduler). Task 5 adds a `dispatcher: CoroutineDispatcher = Dispatchers.IO` constructor parameter to `OtpServerApi` (defaulting to today's real behavior — zero change for production code or Task 3's own `OtpServerApiTest`) and replaces each `withContext(Dispatchers.IO)` above with `withContext(dispatcher)`. See Task 5's own steps for the exact diff.
+
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd android && ./gradlew :app:testDebugUnitTest --tests "one.brj.bikebus.network.OtpServerApiTest"`
@@ -926,21 +927,88 @@ git commit -m "Port Places API client, rewire NetworkModule to OtpServerApi"
 ### Task 5: Rewrite `TripViewModel`
 
 **Files:**
+- Modify: `android/app/src/main/java/one/brj/bikebus/data/SavedPlacesStore.kt`
+- Modify: `android/app/src/main/java/one/brj/bikebus/network/OtpServerApi.kt`
+- Modify: `android/app/build.gradle.kts`
 - Create: `android/app/src/main/java/one/brj/bikebus/TripViewModel.kt`
 - Test: `android/app/src/test/java/one/brj/bikebus/TripViewModelTest.kt`
 
 **Interfaces:**
 - Consumes: `OtpServerApi`/`SearchResult`/`ConnectOutcome` (Task 3), `PlacesApi` (Task 4), `TripUiState`/`SearchMode`/`ResolvedPlace`/`PlaceSuggestion`/`SavedPlace` (Task 2).
-- Produces: `TripViewModel(application: Application)` with `uiState: StateFlow<TripUiState>` and the public methods listed below — Task 6's `TripScreen` binds to these exact names.
+- Produces: `PlacesPersistence` (interface, in `data/SavedPlacesStore.kt`); `TripViewModel(application: Application)` with `uiState: StateFlow<TripUiState>` and the public methods listed below — Task 6's `TripScreen` binds to these exact names.
 
-- [ ] **Step 1: Write the failing tests**
+**A note on why this task's tests don't use Robolectric:** an earlier attempt at this task tried running `TripViewModel`'s tests under Robolectric (to provide a real `Application`/`Context` for `AndroidViewModel`'s constructor). That led to a three-layer dead end on this machine's toolchain: Robolectric 4.13 doesn't support this project's real `compileSdk`/`targetSdk` (37) at all; the version that does (4.17) needs a JDK 21 *host* to build its sandbox, which this project doesn't otherwise need; and even with that fixed, Robolectric 4.17's own internals fail against a plain JDK 17/21 install with `IllegalAccessException: ... module java.base does not export jdk.internal.access` (Robolectric needs `--add-opens` JVM flags this module doesn't set). A sibling project in this same dev environment (`bikebus/app`, same real AGP/Kotlin/compileSdk/targetSdk) independently reaches the same conclusion: it uses on-device `androidTest` for anything touching the Android framework, and plain JUnit (no Robolectric) for everything else. Given the plan's own constraint against device/emulator testing by Claude, the correct fix is to avoid needing a real/simulated Android framework at all — which turns out to be straightforward, since the only two framework dependencies `TripViewModel` actually has (`SavedPlacesStore`'s `Context`, and `LocationProvider`'s `Context`) are either overridable or untouched by this task's tests. See Step 1 below.
 
-These use a fake `OtpServerApi`-shaped seam. Since `OtpServerApi`'s constructor takes a real `OkHttpClient`, the test doubles the HTTP layer with `MockWebServer` (same tool as Task 3) rather than subclassing, keeping `TripViewModel` decoupled from a test-only interface:
+- [ ] **Step 1: Add a `PlacesPersistence` seam to `SavedPlacesStore.kt`**
+
+Modify `android/app/src/main/java/one/brj/bikebus/data/SavedPlacesStore.kt` (from Task 2) to extract an interface and have `SavedPlacesStore` implement it — purely additive, no behavior change:
+
+```kotlin
+package one.brj.bikebus.data
+
+import android.content.Context
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import one.brj.bikebus.model.SavedPlace
+
+interface PlacesPersistence {
+    fun loadFavorites(): List<SavedPlace>
+    fun saveFavorites(places: List<SavedPlace>)
+    fun loadRecents(): List<SavedPlace>
+    fun saveRecents(places: List<SavedPlace>)
+}
+
+class SavedPlacesStore(context: Context) : PlacesPersistence {
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun loadFavorites(): List<SavedPlace> = load(KEY_FAVORITES)
+    override fun saveFavorites(places: List<SavedPlace>) = save(KEY_FAVORITES, places)
+
+    override fun loadRecents(): List<SavedPlace> = load(KEY_RECENTS)
+    override fun saveRecents(places: List<SavedPlace>) = save(KEY_RECENTS, places)
+
+    private fun load(key: String): List<SavedPlace> = runCatching {
+        prefs.getString(key, null)?.let { json.decodeFromString<List<SavedPlace>>(it) }
+    }.getOrNull() ?: emptyList()
+
+    private fun save(key: String, places: List<SavedPlace>) {
+        prefs.edit().putString(key, json.encodeToString(places)).apply()
+    }
+
+    companion object {
+        private const val PREFS_NAME = "saved_places"
+        private const val KEY_FAVORITES = "favorites"
+        private const val KEY_RECENTS = "recents"
+    }
+}
+```
+
+- [ ] **Step 2: Give `OtpServerApi` an injectable dispatcher, and let unit tests call stubbed Android methods without throwing**
+
+Two small, additive changes needed for Step 3's tests to run deterministically and cleanly:
+
+1. In `network/OtpServerApi.kt` (from Task 3), add a `dispatcher: CoroutineDispatcher = Dispatchers.IO` constructor parameter (defaults to today's real behavior — zero change for production code or Task 3's own `OtpServerApiTest`), and replace each of the three `withContext(Dispatchers.IO)` calls with `withContext(dispatcher)`. Add `import kotlinx.coroutines.CoroutineDispatcher`. This lets tests inject the *same* `TestDispatcher` used for `Dispatchers.setMain(...)`, so `advanceUntilIdle()` can see and drain that work — the real `Dispatchers.IO` runs on its own thread pool the test scheduler can't observe, which otherwise makes assertions run before the network call actually completes.
+
+2. Add this inside `android/app/build.gradle.kts`'s `android { }` block:
+
+```kotlin
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+```
+
+`TripViewModel`'s failure paths call `Log.e(...)` (a real Android framework method); under the default Android unit-test stub jar every such call throws `Method ... not mocked` instead of silently no-op'ing. This flag makes stubbed framework methods return a default value (0/null/false) instead of throwing — the standard, minimal fix for this extremely common situation, far better than deleting legitimate production error-logging just to make tests pass.
+
+- [ ] **Step 3: Write the failing tests**
+
+These never need a real/simulated Android `Context`: `TripViewModel` takes `Application()` constructed directly (its constructor only stores the reference, never dereferences it in any path these tests exercise), `otpServerApiOverride` points at `MockWebServer` (same tool as Task 3) *and* shares this test's own `dispatcher` (per Step 2's change, so `advanceUntilIdle()` can see that work), and a new `placesPersistenceOverride` replaces `SavedPlacesStore` with an in-memory fake — so this is a plain JUnit test, no Robolectric, no `androidx.test`:
 
 ```kotlin
 package one.brj.bikebus
 
-import androidx.test.core.app.ApplicationProvider
+import android.app.Application
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -950,6 +1018,7 @@ import kotlinx.coroutines.test.setMain
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import one.brj.bikebus.data.PlacesPersistence
 import one.brj.bikebus.model.NearbyRoute
 import one.brj.bikebus.model.SavedPlace
 import one.brj.bikebus.model.SearchMode
@@ -959,11 +1028,17 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
+
+private class FakePlacesPersistence : PlacesPersistence {
+    private var favorites = emptyList<SavedPlace>()
+    private var recents = emptyList<SavedPlace>()
+    override fun loadFavorites() = favorites
+    override fun saveFavorites(places: List<SavedPlace>) { favorites = places }
+    override fun loadRecents() = recents
+    override fun saveRecents(places: List<SavedPlace>) { recents = places }
+}
 
 @OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(RobolectricTestRunner::class)
 class TripViewModelTest {
     private lateinit var server: MockWebServer
     private lateinit var viewModel: TripViewModel
@@ -975,8 +1050,9 @@ class TripViewModelTest {
         server = MockWebServer()
         server.start()
         viewModel = TripViewModel(
-            application = ApplicationProvider.getApplicationContext(),
-            otpServerApiOverride = OtpServerApi(OkHttpClient(), server.url("/").toString().removeSuffix("/"), "test-token"),
+            application = Application(),
+            otpServerApiOverride = OtpServerApi(OkHttpClient(), server.url("/").toString().removeSuffix("/"), "test-token", dispatcher),
+            placesPersistenceOverride = FakePlacesPersistence(),
         )
     }
 
@@ -1024,8 +1100,9 @@ class TripViewModelTest {
         // A fresh viewModel pointed at a non-routable address, so this test never touches
         // the shared server/viewModel (and never needs to shut the server down mid-test).
         val unreachableViewModel = TripViewModel(
-            application = ApplicationProvider.getApplicationContext(),
-            otpServerApiOverride = OtpServerApi(OkHttpClient(), "http://127.0.0.1:1", "test-token"),
+            application = Application(),
+            otpServerApiOverride = OtpServerApi(OkHttpClient(), "http://127.0.0.1:1", "test-token", dispatcher),
+            placesPersistenceOverride = FakePlacesPersistence(),
         )
         unreachableViewModel.selectSavedPlace(SavedPlace("p1", "Origin", 55.0, 12.0), isFrom = true)
         unreachableViewModel.selectSavedPlace(SavedPlace("p2", "Destination", 56.0, 13.0), isFrom = false)
@@ -1046,31 +1123,14 @@ class TripViewModelTest {
 }
 ```
 
-This requires `androidx.test:core` and `org.robolectric:robolectric` (to run `AndroidViewModel`'s `Application` dependency on the JVM, not a device) as new `testImplementation` dependencies, plus a constructor seam (`otpServerApiOverride`) so the test never touches the real `NetworkModule` singleton.
+This requires no new test *dependencies* beyond what Task 1 already added (`junit:junit`, `kotlinx-coroutines-test`, `mockwebserver`) — only Step 2's `dispatcher` param and `testOptions` flag. Constructing `android.app.Application()` directly on the plain JVM unit-test classpath works (its constructor only calls `super(null)`, touching nothing that the default Android unit-test stub jar would reject), and neither of these tests ever call a method that touches `LocationProvider` (the only other framework-dependent lazy property on `TripViewModel`, only reached from `fetchSuggestions`, which none of these tests exercise).
 
-- [ ] **Step 2: Add the test-only dependencies**
-
-Add to `android/app/build.gradle.kts`'s `dependencies` block:
-
-```kotlin
-    testImplementation("androidx.test:core:1.6.1")
-    testImplementation("org.robolectric:robolectric:4.13")
-```
-
-And add, inside the `android { }` block:
-
-```kotlin
-    testOptions {
-        unitTests.isIncludeAndroidResources = true
-    }
-```
-
-- [ ] **Step 3: Run the tests to verify they fail**
+- [ ] **Step 4: Run the tests to verify they fail**
 
 Run: `cd android && ./gradlew :app:testDebugUnitTest --tests "one.brj.bikebus.TripViewModelTest"`
 Expected: FAIL — `TripViewModel` doesn't have the new constructor/shrunk behavior yet.
 
-- [ ] **Step 4: Write `TripViewModel.kt`**
+- [ ] **Step 5: Write `TripViewModel.kt`**
 
 ```kotlin
 package one.brj.bikebus
@@ -1085,6 +1145,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import one.brj.bikebus.data.PlacesPersistence
 import one.brj.bikebus.data.SavedPlacesStore
 import one.brj.bikebus.domain.LocationProvider
 import one.brj.bikebus.model.NearbyRoute
@@ -1117,12 +1178,13 @@ import kotlin.math.abs
 class TripViewModel(
     application: Application,
     private val otpServerApiOverride: OtpServerApi? = null,
+    private val placesPersistenceOverride: PlacesPersistence? = null,
 ) : AndroidViewModel(application) {
 
     private val placesApi by lazy { NetworkModule.placesApi }
     private val otpServerApi by lazy { otpServerApiOverride ?: NetworkModule.otpServerApi }
     private val deviceLocation by lazy { LocationProvider.lastKnownCoarseLocation(getApplication<Application>()) }
-    private val savedPlacesStore by lazy { SavedPlacesStore(getApplication<Application>()) }
+    private val savedPlacesStore: PlacesPersistence by lazy { placesPersistenceOverride ?: SavedPlacesStore(getApplication<Application>()) }
 
     private val _uiState = MutableStateFlow(TripUiState())
     val uiState: StateFlow<TripUiState> = _uiState
@@ -1425,15 +1487,15 @@ Dropped relative to bikebus-main: `wakeServer()`, `incrementRank`/favorites-rank
 
 **Note on `incrementRank`:** bikebus-main bumps a saved place's `rank` on every selection, and `AddressField`'s favorites picker sorts by `rank` descending. This plan drops the increment calls (`selectSavedPlace`/`selectNearbyRoute` no longer call it) because the ported `AddressField` still sorts by `rank`, so without incrementing it, favorites keep a stable (insertion) order rather than most-used-first — a minor behavior regression, not a crash or data-loss risk. Flagging it here for the final review rather than silently preserving or silently dropping it: re-add `incrementRank` (identical to bikebus-main's) if you want most-used-first ordering back; nothing else in this plan depends on the decision either way.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd android && ./gradlew :app:testDebugUnitTest --tests "one.brj.bikebus.TripViewModelTest"`
 Expected: PASS (6 tests).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add android/app/src/main/java/one/brj/bikebus/TripViewModel.kt android/app/src/test/java/one/brj/bikebus/TripViewModelTest.kt android/app/build.gradle.kts
+git add android/app/src/main/java/one/brj/bikebus/TripViewModel.kt android/app/src/main/java/one/brj/bikebus/data/SavedPlacesStore.kt android/app/src/main/java/one/brj/bikebus/network/OtpServerApi.kt android/app/build.gradle.kts android/app/src/test/java/one/brj/bikebus/TripViewModelTest.kt
 git commit -m "Rewrite TripViewModel to call OtpServerApi instead of raw OTP GraphQL"
 ```
 
@@ -1866,9 +1928,9 @@ why the frontend is no longer served) behind a custom-built, rate-limited,
 token-gated Caddy, on an Always Free `VM.Standard.A1.Flex` instance.
 ```
 
-- [ ] **Step 7: Verify the real CI build still succeeds**
+- [ ] **Step 7: Verify locally (real CI runs automatically once this branch merges)**
 
-Push this task's commit (see Step 8) and confirm via `gh run watch` (or the Actions tab) that the `backend` job still builds and pushes `ghcr.io/<owner>/otp-server-ui:latest` successfully without the Bun steps. This is the same real-CI-as-verification approach already used for every other Dockerfile change in this project — no local emulated Docker build needed given CI already proves it on real hardware.
+`publish-images.yml` only triggers on pushes to `main` (`on: push: branches: [main]`), and this task's work happens on the `android-native-rewrite` feature branch — pushing this branch does not run the workflow. Run `./gradlew :backend:test` instead to confirm `Main.kt`'s change didn't break anything, and visually re-check the trimmed `Dockerfile`/`publish-images.yml` for syntax correctness (no automated check for either outside a real CI run). Real CI will exercise both files for real the moment this branch merges to `main` — no separate action needed from this task to arrange that.
 
 - [ ] **Step 8: Commit**
 
