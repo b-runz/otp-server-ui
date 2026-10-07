@@ -41,7 +41,6 @@
 - Delete: `android/app/src/main/res/layout/activity_main.xml`
 - Delete: `android/app/src/main/res/values/themes.xml`
 - Create (temporary, replaced in Task 6): `android/app/src/main/java/one/brj/bikebus/MainActivity.kt`
-- Modify: `android/README.md`
 
 **Interfaces:**
 - Produces: `BuildConfig.OTP_AUTH_TOKEN`, `BuildConfig.GOOGLE_PLACES_API_KEY`, `BuildConfig.OTP_SERVER_BASE_URL` — every later task's network code reads these three fields.
