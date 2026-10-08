@@ -5,7 +5,6 @@ packages:
   - curl
   - gnupg
   - iptables-persistent
-  - golang-go
 
 write_files:
   - path: /etc/caddy/Caddyfile
@@ -26,16 +25,31 @@ runcmd:
   - usermod -aG docker ubuntu
 
   # xcaddy build: Caddy + caddy-ratelimit, compiled once at first boot.
+  #
+  # Installs a current official Go release directly rather than apt's
+  # `golang-go` package -- confirmed directly against a real deploy that
+  # Ubuntu 22.04's `golang-go` is Go 1.18 (from 2022), which can't even
+  # PARSE xcaddy's go.mod ("unknown directive: toolchain"; the toolchain
+  # directive itself didn't exist before Go 1.21). Ubuntu's LTS apt repos
+  # don't backport newer Go majors, so this isn't a transient packaging
+  # gap -- apt's golang-go was never going to work here. The go.dev JSON
+  # API is queried for the current stable linux/arm64 release instead of
+  # hardcoding a version that will eventually go stale.
+  #
   # GOPATH is exported explicitly rather than resolved via `$(go env
-  # GOPATH)` -- confirmed directly against a real deploy that `go env
-  # GOPATH` comes back EMPTY in cloud-init's non-interactive runcmd
-  # execution context (collapsing "$GOPATH/bin/xcaddy" into the literal,
-  # nonexistent path "/bin/xcaddy"), even though the same command works
-  # fine in an interactive shell. `go install` and the xcaddy build must
-  # share one GOPATH, so both run in the same multi-line block --
-  # runcmd's separate list items are each their own shell invocation and
-  # don't share exported variables.
+  # GOPATH)` -- confirmed directly that `go env GOPATH` comes back EMPTY
+  # in cloud-init's non-interactive runcmd execution context (collapsing
+  # "$GOPATH/bin/xcaddy" into the literal, nonexistent path
+  # "/bin/xcaddy"), even though the same command works fine in an
+  # interactive shell. Every step here shares one GOPATH/PATH, so it's
+  # all one multi-line block -- runcmd's separate list items are each
+  # their own shell invocation and don't share exported variables.
   - |
+    GO_TARBALL=$(curl -fsSL 'https://go.dev/dl/?mode=json' | grep -o 'go[0-9.]*\.linux-arm64\.tar\.gz' | head -1)
+    curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/$GO_TARBALL"
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf /tmp/go.tar.gz
+    export PATH="/usr/local/go/bin:$PATH"
     export GOPATH=/root/go
     go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
     "$GOPATH/bin/xcaddy" build --with github.com/mholt/caddy-ratelimit --output /usr/bin/caddy
