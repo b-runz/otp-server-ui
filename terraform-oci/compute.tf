@@ -80,6 +80,21 @@ resource "null_resource" "deploy_otp" {
     timeout     = "5m"
   }
 
+  # Terraform runs this resource's provisioners in the order they're
+  # written. Without this first remote-exec, the two `file` provisioners
+  # below ran *before* cloud-init's own `mkdir -p /home/ubuntu/otp-graph`
+  # step -- confirmed directly against a real deploy: the graph upload's
+  # destination directory didn't exist yet, so the SSH file-copy collapsed
+  # it into a flat file literally named `otp-graph` (not a directory
+  # containing graph.obj), and cloud-init's own later `mkdir -p` then
+  # failed with "File exists". Waiting for cloud-init first guarantees the
+  # directory is real before anything is uploaded into it.
+  provisioner "remote-exec" {
+    inline = [
+      "cloud-init status --wait",
+    ]
+  }
+
   # GOOGLE_PLACES_API_KEY, written to an uploaded file -- never a `-e`
   # flag on a remote-exec command line (see the spec's own "Secrets"
   # section).
@@ -96,7 +111,6 @@ resource "null_resource" "deploy_otp" {
 
   provisioner "remote-exec" {
     inline = [
-      "cloud-init status --wait",
       "chmod 600 /home/ubuntu/otp-server-ui.env",
 
       "sudo docker rm -f otp-server-ui || true",

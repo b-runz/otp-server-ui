@@ -26,15 +26,19 @@ runcmd:
   - usermod -aG docker ubuntu
 
   # xcaddy build: Caddy + caddy-ratelimit, compiled once at first boot.
-  # Uses "$(go env GOPATH)/bin/xcaddy" rather than a hardcoded ~/go/bin
-  # path -- confirmed during this plan's own Task 6 that apt's golang-go
-  # (and the golang:1-bookworm image used for that same check) both set
-  # GOPATH to /go or similar, not necessarily $HOME/go, so resolving it
-  # via `go env` is the only reliable way to find the installed binary.
-  - go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+  # GOPATH is exported explicitly rather than resolved via `$(go env
+  # GOPATH)` -- confirmed directly against a real deploy that `go env
+  # GOPATH` comes back EMPTY in cloud-init's non-interactive runcmd
+  # execution context (collapsing "$GOPATH/bin/xcaddy" into the literal,
+  # nonexistent path "/bin/xcaddy"), even though the same command works
+  # fine in an interactive shell. `go install` and the xcaddy build must
+  # share one GOPATH, so both run in the same multi-line block --
+  # runcmd's separate list items are each their own shell invocation and
+  # don't share exported variables.
   - |
-    XCADDY="$(go env GOPATH)/bin/xcaddy"
-    "$XCADDY" build --with github.com/mholt/caddy-ratelimit --output /usr/bin/caddy
+    export GOPATH=/root/go
+    go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+    "$GOPATH/bin/xcaddy" build --with github.com/mholt/caddy-ratelimit --output /usr/bin/caddy
 
   - id caddy >/dev/null 2>&1 || groupadd --system caddy
   - id caddy >/dev/null 2>&1 || useradd --system --gid caddy --home-dir /var/lib/caddy --no-create-home --shell /usr/sbin/nologin --comment 'Caddy web server' caddy
