@@ -68,6 +68,14 @@ runcmd:
     [Service]
     User=caddy
     Group=caddy
+    # Caddy binds ports 80/443 (both < 1024); the unprivileged caddy user
+    # can't do that on its own -- confirmed directly against a real deploy
+    # ("listen tcp :443: bind: permission denied"). These two directives
+    # are systemd's standard way to grant just that one capability without
+    # running Caddy as root (the same pattern Caddy's own official
+    # systemd unit file uses upstream).
+    AmbientCapabilities=CAP_NET_BIND_SERVICE
+    CapabilityBoundingSet=CAP_NET_BIND_SERVICE
     ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
     ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile
     Restart=on-failure
