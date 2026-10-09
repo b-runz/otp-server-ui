@@ -2,8 +2,10 @@ package org.opentripplanner.graphbuilder.throwaway;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.Duration;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import org.opentripplanner.core.model.time.LocalDateRange;
 import org.opentripplanner.datastore.api.FileType;
 import org.opentripplanner.datastore.file.FileDataSource;
@@ -17,10 +19,15 @@ import org.opentripplanner.graph_builder.module.cache.GraphBuildCacheManager;
 import org.opentripplanner.graph_builder.module.geometry.CalculateWorldEnvelopeModule;
 import org.opentripplanner.graph_builder.module.osm.OsmModule;
 import org.opentripplanner.graph_builder.module.stopconnectivity.StopConnectivityModule;
+import org.opentripplanner.graph_builder.module.transfer.DirectTransferGenerator;
+import org.opentripplanner.graph_builder.module.transfer.api.RegularTransferParameters;
+import org.opentripplanner.graph_builder.module.transfer.api.TransferParametersForMode;
 import org.opentripplanner.gtfs.config.GtfsFeedParameters;
 import org.opentripplanner.gtfs.graphbuilder.GtfsBundle;
 import org.opentripplanner.gtfs.graphbuilder.GtfsModule;
 import org.opentripplanner.osm.DefaultOsmProvider;
+import org.opentripplanner.routing.api.request.RouteRequest;
+import org.opentripplanner.routing.api.request.request.StreetRequest;
 import org.opentripplanner.routing.fares.NoopFareServiceFactory;
 import org.opentripplanner.routing.graph.SerializedGraphObject;
 import org.opentripplanner.service.osminfo.internal.DefaultOsmInfoGraphBuildRepository;
@@ -35,6 +42,7 @@ import org.opentripplanner.street.graph.Graph;
 import org.opentripplanner.street.linking.VertexLinker;
 import org.opentripplanner.street.linking.VisibilityMode;
 import org.opentripplanner.street.model.StreetConstants;
+import org.opentripplanner.street.model.StreetMode;
 import org.opentripplanner.transfer.regular.internal.DefaultTransferRepository;
 import org.opentripplanner.transfer.regular.internal.TransferIndex;
 import org.opentripplanner.transit.model.framework.Deduplicator;
@@ -141,6 +149,35 @@ public class BuildFixtureGraph {
     );
     graphBuilder.addModule(new TurnRestrictionModule(graph, osmInfoGraphBuildRepository));
     graphBuilder.addModule(new StopConnectivityModule(graph, issueStore));
+
+    // --- Stop-to-stop transfers (WALK + BIKE) ---
+    // Use buildDefault() (not buildRequest()) so these stay "default requests" with no
+    // from/to location set -- buildRequest() always clears the defaultRequest flag, which
+    // would then fail RouteRequest's from/to validation since these profiles never set one.
+    // This mirrors upstream's own RouteRequestConfig.mapRouteRequest, which builds transfer
+    // request profiles from RouteRequest.defaultValue() via requestBuilder.buildDefault().
+    var walkTransferRequest = RouteRequest.of()
+      .withJourney(journey -> journey.withTransfer(new StreetRequest(StreetMode.WALK)))
+      .buildDefault();
+    var bikeTransferRequest = RouteRequest.of()
+      .withJourney(journey -> journey.withTransfer(new StreetRequest(StreetMode.BIKE)))
+      .buildDefault();
+
+    var transferParameters = new RegularTransferParameters(
+      Duration.ofMinutes(10),
+      Map.of(StreetMode.BIKE, new TransferParametersForMode(Duration.ofMinutes(20), null, null, false)),
+      List.of(walkTransferRequest, bikeTransferRequest)
+    );
+    graphBuilder.addModule(
+      new DirectTransferGenerator(
+        graph,
+        transitRepository,
+        transferRepository,
+        issueStore,
+        transferParameters
+      )
+    );
+
     graphBuilder.addModule(
       new CalculateWorldEnvelopeModule(graph, transitRepository, worldEnvelopeRepository)
     );
